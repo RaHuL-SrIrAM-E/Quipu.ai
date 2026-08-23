@@ -13,7 +13,10 @@ from google.adk.models.llm_response import LlmResponse
 from app.config import get_settings
 from app.core.metrics import RunMetrics
 from app.core.observability import get_logger
+from app.core.db_hooks import stage_completed, stage_started
 from app.core.rbac import STAGE_ROLES, Permission
+from app.tools.jira_tools import JIRA_TOOLS
+from app.tools.repo_tools import REPO_TOOLS
 
 logger = get_logger("quipu.agent.planning")
 settings = get_settings()
@@ -37,6 +40,7 @@ class PlanTask(BaseModel):
     id: str
     description: str
     depends_on: list[str] = Field(default_factory=list)
+    jira_key: str | None = None
 
     _validate_id = field_validator("id")(_non_empty)
     _validate_description = field_validator("description")(_non_empty)
@@ -105,17 +109,30 @@ class PlanOutput(BaseModel):
 
 
 PLANNING_INSTRUCTION = """You are the Planning agent in Quipu's SDLC pipeline.
+
+You have tools to inspect the actual repo this feature will be built in:
+get_project_structure, search_files, search_code, read_file, get_dependencies.
+Use them before writing the plan — check real module/file names, existing
+patterns, and declared dependencies so the plan is specific to this codebase,
+not generic. Don't guess a structure you haven't looked at.
+
 Given a feature request, work through it in this order and fill every field:
 
 1. feature_summary — restate the feature in one or two sentences.
-2. architecture_notes — how this fits the existing system at a high level.
-3. affected_components — each system/module touched, and why.
+2. architecture_notes — how this fits the *existing* system, referencing real
+   files/modules you found via the tools.
+3. affected_components — each real system/module touched, and why.
 4. tasks — ordered, concrete engineering tasks, each small enough for a
    single Architecture/Coding pass. Reference other tasks by id in depends_on.
 5. dependencies — external dependencies outside this task list (other teams,
-   services, infra, approvals).
+   services, infra, approvals), informed by get_dependencies where relevant.
 6. acceptance_criteria — concrete, testable conditions for "done".
 7. risks — what could go wrong, each with a mitigation.
+
+Once the task list is finalized, call create_story once per task (summary =
+a short title for the task, description = the task's full description) and
+record the returned issue key in that task's jira_key field. Do this for
+every task — one Jira story per task, no exceptions.
 
 Return only the structured plan."""
 
@@ -151,6 +168,8 @@ planning_agent = LlmAgent(
     instruction=PLANNING_INSTRUCTION,
     output_schema=PlanOutput,
     output_key="plan",
-    before_agent_callback=_rbac_gate,
+    tools=REPO_TOOLS + JIRA_TOOLS,
+    before_agent_callback=[_rbac_gate, stage_started("planning")],
+    after_agent_callback=[stage_completed("planning", "plan")],
     after_model_callback=_track_usage,
 )

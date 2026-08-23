@@ -15,6 +15,7 @@ class Permission(StrEnum):
     MODIFY_INFRA = "modify_infra"
     PAGE_ONCALL = "page_oncall"
     READ_MONITORING = "read_monitoring"
+    WRITE_JIRA = "write_jira"
 
 
 class PermissionDeniedError(Exception):
@@ -34,7 +35,9 @@ class AgentRole:
 # Default role grants per pipeline stage. Tune per deployment/org policy.
 STAGE_ROLES: dict[str, AgentRole] = {
     "feature_detection": AgentRole("feature_detection", frozenset({Permission.READ_CODEBASE, Permission.READ_KNOWLEDGE_BASE})),
-    "planning": AgentRole("planning", frozenset({Permission.READ_CODEBASE, Permission.READ_KNOWLEDGE_BASE})),
+    "planning": AgentRole(
+        "planning", frozenset({Permission.READ_CODEBASE, Permission.READ_KNOWLEDGE_BASE, Permission.WRITE_JIRA})
+    ),
     "architecture": AgentRole("architecture", frozenset({Permission.READ_CODEBASE, Permission.READ_KNOWLEDGE_BASE})),
     "coding": AgentRole("coding", frozenset({Permission.READ_CODEBASE, Permission.WRITE_CODE, Permission.READ_KNOWLEDGE_BASE})),
     "testing": AgentRole("testing", frozenset({Permission.READ_CODEBASE, Permission.RUN_TESTS})),
