@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+google-adk
+sqlalchemy
+pydantic
+pydantic-settings
+google-genai
+python-dotenv
+pytest
