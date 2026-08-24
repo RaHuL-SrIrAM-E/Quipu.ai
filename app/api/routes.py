@@ -7,7 +7,6 @@ router = APIRouter()
 
 
 class RunRequest(BaseModel):
-    feature_request: str
     repo_url: str | None = None
     ref: str | None = None
 
@@ -18,7 +17,7 @@ class RunResponse(BaseModel):
 
 @router.post("/runs", response_model=RunResponse)
 async def create_run(request: RunRequest) -> RunResponse:
-    state = await run_pipeline(request.feature_request, repo_url=request.repo_url, ref=request.ref)
+    state = await run_pipeline(repo_url=request.repo_url, ref=request.ref)
     return RunResponse(state=state)
 
 

@@ -1,5 +1,8 @@
 """Drives one pipeline run: creates the PipelineRun row, executes the ADK
 SequentialAgent, and returns the accumulated session state.
+
+feature_request is no longer a caller input — Feature Detection produces it
+from mocked customer signal data as the first stage.
 """
 
 import uuid
@@ -16,12 +19,12 @@ from app.orchestrator.pipeline import quipu_pipeline
 logger = get_logger("quipu.orchestrator")
 
 
-async def run_pipeline(feature_request: str, repo_url: str | None = None, ref: str | None = None) -> dict:
+async def run_pipeline(repo_url: str | None = None, ref: str | None = None) -> dict:
     run_id = str(uuid.uuid4())
 
     db = SessionLocal()
     try:
-        db.add(PipelineRun(id=run_id, feature_request=feature_request, status="running"))
+        db.add(PipelineRun(id=run_id, feature_request="", status="running"))
         db.commit()
     finally:
         db.close()
@@ -32,7 +35,7 @@ async def run_pipeline(feature_request: str, repo_url: str | None = None, ref: s
 
     runner = InMemoryRunner(agent=quipu_pipeline, app_name="quipu")
     session = await runner.session_service.create_session(app_name="quipu", user_id="pipeline", state=state)
-    message = types.Content(role="user", parts=[types.Part(text=feature_request)])
+    message = types.Content(role="user", parts=[types.Part(text="Begin pipeline run.")])
 
     status = "completed"
     try:
@@ -50,6 +53,7 @@ async def run_pipeline(feature_request: str, repo_url: str | None = None, ref: s
         try:
             pipeline_run = db.get(PipelineRun, run_id)
             pipeline_run.status = status
+            pipeline_run.feature_request = final_session.state.get("feature_request", "")
             db.commit()
         finally:
             db.close()

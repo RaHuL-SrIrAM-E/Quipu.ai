@@ -8,10 +8,11 @@ The Coding<->Testing retry loop, when built, should be a LoopAgent nested in her
 from google.adk.agents import SequentialAgent
 
 from app.agents.architecture import architecture_agent
+from app.agents.feature_detection import feature_detection_agent
 from app.agents.planning import planning_agent
 
 quipu_pipeline = SequentialAgent(
     name="quipu_pipeline",
     description="Runs Quipu's SDLC stages in order.",
-    sub_agents=[planning_agent, architecture_agent],
+    sub_agents=[feature_detection_agent, planning_agent, architecture_agent],
 )

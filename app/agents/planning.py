@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models.llm_response import LlmResponse
 
 from app.config import get_settings
@@ -108,7 +109,9 @@ class PlanOutput(BaseModel):
         return self
 
 
-PLANNING_INSTRUCTION = """You are the Planning agent in Quipu's SDLC pipeline.
+def _build_instruction(context: ReadonlyContext) -> str:
+    feature_request = context.state.get("feature_request", "(no feature_request found in session state)")
+    return f"""You are the Planning agent in Quipu's SDLC pipeline.
 
 You have tools to inspect the actual repo this feature will be built in:
 get_project_structure, search_files, search_code, read_file, get_dependencies.
@@ -116,7 +119,10 @@ Use them before writing the plan — check real module/file names, existing
 patterns, and declared dependencies so the plan is specific to this codebase,
 not generic. Don't guess a structure you haven't looked at.
 
-Given a feature request, work through it in this order and fill every field:
+The feature request from the Feature Detection stage:
+{feature_request}
+
+Work through it in this order and fill every field:
 
 1. feature_summary — restate the feature in one or two sentences.
 2. architecture_notes — how this fits the *existing* system, referencing real
@@ -165,7 +171,7 @@ planning_agent = LlmAgent(
     name="planning",
     description="Breaks a detected feature into an ordered task plan.",
     model=settings.gemini_model,
-    instruction=PLANNING_INSTRUCTION,
+    instruction=_build_instruction,
     output_schema=PlanOutput,
     output_key="plan",
     tools=REPO_TOOLS + JIRA_TOOLS,

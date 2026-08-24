@@ -27,7 +27,7 @@ async def run(
     max_attempts: int = MAX_ATTEMPTS,
 ) -> str:
     run_id = str(uuid.uuid4())
-    state = {}
+    state = {"feature_request": feature_request}
     if repo_url:
         workspace_path = clone_repo(repo_url, run_id, ref=ref)
         state["workspace_path"] = str(workspace_path)
@@ -35,7 +35,7 @@ async def run(
     runner = InMemoryRunner(agent=planning_agent, app_name="quipu")
     session = await runner.session_service.create_session(app_name="quipu", user_id="cli", state=state)
 
-    message = types.Content(role="user", parts=[types.Part(text=feature_request)])
+    message = types.Content(role="user", parts=[types.Part(text="Begin planning.")])
     last_error: Exception | None = None
 
     for attempt in range(1, max_attempts + 1):
