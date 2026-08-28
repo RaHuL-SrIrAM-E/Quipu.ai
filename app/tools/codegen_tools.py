@@ -40,7 +40,7 @@ def write_file(path: str, content: str, tool_context: ToolContext) -> dict:
     if Path(path).is_absolute():
         return {"success": False, "path": path, "error": "absolute paths are not allowed"}
 
-    normalized = path.lstrip("./")
+    normalized = path.removeprefix("./")
     allowed = set(tool_context.state.get("_allowed_paths", []))
     if normalized not in allowed:
         return {

@@ -273,6 +273,7 @@ _TOOL_CAPABILITY_MAP = {
     "get_dependencies": AgentCapability.READ_REPOSITORY,
     "query_enterprise_knowledge": AgentCapability.QUERY_KNOWLEDGE,
     "write_file": AgentCapability.WRITE_CODE,
+    "run_tests": AgentCapability.RUN_TESTS,
 }
 
 

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # FIRESTORE_EMULATOR_HOST env var (read automatically by the Google client).
     firestore_database_id: str | None = None
 
+    # app/tools/testing_tools.py — bounds a single controlled test-runner
+    # invocation so a hung test suite can't hang the whole agent.
+    test_execution_timeout_seconds: float = 120.0
+
     log_level: str = "INFO"
 
 
