@@ -26,6 +26,11 @@ class WorkflowStatus(StrEnum):
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
 
+    # Level 2.0: distinct from FAILED — a workflow the orchestrator has
+    # deliberately handed to a human (retry budget exhausted, unknown
+    # failure, invalid/unsafe requested transition), not one that crashed.
+    ESCALATED = "escalated"
+
 
 class WorkflowStage(StrEnum):
     PLANNING = "planning"

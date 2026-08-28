@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # invocation so a hung test suite can't hang the whole agent.
     test_execution_timeout_seconds: float = 120.0
 
+    # app/orchestration/ — bounded retry/recovery limits. Named per stage
+    # rather than one global number, since a flaky test suite and a genuinely
+    # broken design fail for different reasons and may warrant different budgets.
+    max_codegen_retries: int = 2
+    max_test_retries: int = 2
+    max_architecture_replans: int = 1
+    orchestration_loop_max_iterations: int = 3
+
     log_level: str = "INFO"
 
 

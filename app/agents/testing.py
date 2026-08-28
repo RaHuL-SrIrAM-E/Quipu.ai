@@ -65,6 +65,12 @@ class FailureClassification(StrEnum):
     DEPENDENCY_FAILURE = "dependency_failure"
     UNKNOWN = "unknown"
 
+    # Level 2.0: the orchestrator's decision policy needs to distinguish "the
+    # code is wrong" from "the design is wrong" to route Codegen vs.
+    # Architecture — added here (additive) rather than inventing a second
+    # classification vocabulary in the orchestration layer.
+    ARCHITECTURE_DEFECT = "architecture_defect"
+
 
 class TestFailure(BaseModel):
     test_name: str
@@ -127,6 +133,7 @@ verdict without an actual execution is not acceptable; do not skip running
 tests just because a change looks small.
 
 After execution, classify any failures as one of: code_defect, test_defect,
+architecture_defect (the design itself is wrong, not the implementation),
 environment_failure, dependency_failure, unknown. Never modify application
 code, never deploy, never invent a result the runner didn't report.
 
