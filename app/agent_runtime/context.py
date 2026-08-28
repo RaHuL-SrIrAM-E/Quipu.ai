@@ -13,6 +13,7 @@ from app.agent_runtime.gateways.artifacts import ArtifactGateway
 from app.agent_runtime.gateways.knowledge import KnowledgeGateway
 from app.agent_runtime.gateways.tools import ToolGateway
 from app.core.observability import get_logger
+from app.persistence.repositories.execution import AgentExecutionRepository
 
 
 @dataclass
@@ -24,3 +25,11 @@ class AgentContext:
     artifacts: ArtifactGateway
     logger: Logger = field(default_factory=lambda: get_logger("quipu.agent_runtime"))
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Optional (Level 1.4/1.5 bridge): lets an agent record its own
+    # AgentExecution — started/completed/status/output_artifact_ids — through
+    # the existing persistence repository, instead of a bespoke lifecycle
+    # side-channel. None when the caller hasn't wired persistence up (e.g. a
+    # quick local/dev invocation); agents must treat that as "don't persist,"
+    # not as an error.
+    executions: AgentExecutionRepository | None = None

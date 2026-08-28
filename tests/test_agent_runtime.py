@@ -56,11 +56,12 @@ class FakeArtifactGateway:
     def __init__(self):
         self._store: dict[str, Artifact] = {}
 
-    async def get(self, artifact_id: str) -> Artifact | None:
+    async def get(self, workflow_id: str, artifact_id: str) -> Artifact | None:
         return self._store.get(artifact_id)
 
-    async def save(self, artifact: Artifact) -> None:
+    async def save(self, workflow_id: str, artifact: Artifact) -> Artifact:
         self._store[artifact.artifact_id] = artifact
+        return artifact
 
 
 def make_context(**overrides) -> AgentContext:
@@ -226,9 +227,9 @@ async def test_tool_gateway_test_double():
 async def test_artifact_gateway_test_double():
     gateway = FakeArtifactGateway()
     artifact = Artifact(artifact_type=ArtifactType.PLAN, created_by="planner_agent")
-    assert await gateway.get(artifact.artifact_id) is None
-    await gateway.save(artifact)
-    assert await gateway.get(artifact.artifact_id) == artifact
+    assert await gateway.get("wf-1", artifact.artifact_id) is None
+    await gateway.save("wf-1", artifact)
+    assert await gateway.get("wf-1", artifact.artifact_id) == artifact
 
 
 # 10. AgentRegistry registration

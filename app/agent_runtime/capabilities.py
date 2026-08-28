@@ -26,6 +26,15 @@ class AgentCapability(StrEnum):
     RESOLVE_INCIDENT = "resolve_incident"
     ROLLBACK = "rollback"
 
+    # Level 1.5: generic artifact persistence (any agent producing/reading a
+    # workflow artifact, not just plans) and external-tracker writes. WRITE_JIRA
+    # is deliberately narrow — "create/update an issue in the external tracker" —
+    # rather than a broad WRITE_ANYTHING, since Jira is the only external tool
+    # an agent writes to today.
+    READ_ARTIFACT = "read_artifact"
+    WRITE_ARTIFACT = "write_artifact"
+    WRITE_JIRA = "write_jira"
+
 
 class CapabilityError(RuntimeError):
     """Raised when an agent attempts to act outside its granted capabilities."""
