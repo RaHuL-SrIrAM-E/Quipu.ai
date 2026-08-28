@@ -388,6 +388,7 @@ class PlanningAgent(QuipuAgent):
         session_state: dict = {
             "ticket_summary": f"{agent_input.ticket.title}\n\n{agent_input.ticket.description}",
             "workflow_id": agent_input.workflow_id,
+            "_agent_name": self.identity.agent_id,
             "_capabilities": self.capabilities,
             "_metrics": metrics,
         }

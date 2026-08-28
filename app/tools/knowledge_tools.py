@@ -3,11 +3,13 @@ every prompt. The model decides when a query would help and calls this
 itself; nothing stuffs a large knowledge context into the instruction.
 
 Reads a KnowledgeGateway out of ADK session state (state["_knowledge_gateway"],
-seeded by whoever runs the agent — see PlanningAgent._perform) rather than
-constructing one itself: agents never instantiate a knowledge/search client
-directly. Returns a list of plain dicts mirroring KnowledgeItem's fields
-(document_id, source, relevance_score, etc.) so provenance survives the
-round trip through the model.
+seeded by whoever runs the agent — see PlanningAgent/ArchitectureAgent
+._perform) rather than constructing one itself: agents never instantiate a
+knowledge/search client directly. Shared by every agent (state["_agent_name"]
+picks the retrieval profile — see app.knowledge.policies.AGENT_RETRIEVAL_PROFILES
+— so this isn't duplicated per agent). Returns a list of plain dicts mirroring
+KnowledgeItem's fields (document_id, source, relevance_score, etc.) so
+provenance survives the round trip through the model.
 """
 
 from google.adk.tools import ToolContext
@@ -17,12 +19,12 @@ from app.domain import KnowledgeRequest, KnowledgeType
 
 
 async def query_enterprise_knowledge(query: str, knowledge_type: str, tool_context: ToolContext) -> list[dict]:
-    """Search enterprise knowledge for architecture patterns, compliance rules,
-    technology standards, or historical project context relevant to this
-    feature. knowledge_type must be one of: architecture_pattern, compliance,
-    technology_standard, historical_project — the types this agent is scoped
-    to. Use only when it would materially improve the plan; don't call this
-    for every task.
+    """Search enterprise knowledge — architecture patterns, compliance rules,
+    technology standards, security/platform requirements, or historical
+    project context — relevant to the current task. Only the knowledge_type
+    values in this agent's retrieval profile are allowed. Use only when it
+    would materially improve the result; don't call this for every task, and
+    never fabricate an enterprise standard if nothing relevant is found.
     """
     gateway: KnowledgeGateway | None = tool_context.state.get("_knowledge_gateway")
     if gateway is None:
@@ -30,7 +32,8 @@ async def query_enterprise_knowledge(query: str, knowledge_type: str, tool_conte
 
     from app.knowledge.policies import get_retrieval_policy
 
-    policy = get_retrieval_policy("planning_agent")
+    agent_name = tool_context.state.get("_agent_name", "planning_agent")
+    policy = get_retrieval_policy(agent_name)
 
     try:
         parsed_type = KnowledgeType(knowledge_type)
@@ -39,10 +42,10 @@ async def query_enterprise_knowledge(query: str, knowledge_type: str, tool_conte
 
     if parsed_type not in policy.allowed_knowledge_types:
         allowed = ", ".join(t.value for t in policy.allowed_knowledge_types)
-        raise ValueError(f"knowledge_type '{knowledge_type}' is outside the planning profile ({allowed})")
+        raise ValueError(f"knowledge_type '{knowledge_type}' is outside the {agent_name} profile ({allowed})")
 
     request = KnowledgeRequest(
-        agent_name="planning_agent",
+        agent_name=agent_name,
         workflow_id=tool_context.state.get("workflow_id", ""),
         query=query,
         knowledge_type=parsed_type,
