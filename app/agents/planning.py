@@ -272,15 +272,19 @@ _TOOL_CAPABILITY_MAP = {
     "get_project_structure": AgentCapability.READ_REPOSITORY,
     "get_dependencies": AgentCapability.READ_REPOSITORY,
     "query_enterprise_knowledge": AgentCapability.QUERY_KNOWLEDGE,
+    "write_file": AgentCapability.WRITE_CODE,
 }
 
 
 def _tool_capability_gate(tool, args: dict, tool_context) -> None:
+    """Shared before_tool_callback, reused by Planning/Architecture/Codegen —
+    generic over the tool-name -> capability map above."""
     required = _TOOL_CAPABILITY_MAP.get(tool.name)
     if required is None:
         return None
     granted: set[AgentCapability] = tool_context.state.get("_capabilities", set())
-    check_capability("planning_agent", granted, required)
+    agent_name = tool_context.state.get("_agent_name", "unknown_agent")
+    check_capability(agent_name, granted, required)
     return None
 
 
