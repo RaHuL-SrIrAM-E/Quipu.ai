@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     discovery_engine_serving_config_id: str = "default_search"
     discovery_engine_timeout_seconds: float = 10.0
 
+    # Firestore — used only by app/persistence/firestore/*.py, for Quipu's own
+    # operational/workflow state (NOT enterprise knowledge; see
+    # docs/architecture/persistence.md). None uses Firestore's default database.
+    # For local dev against the Firestore emulator, set the standard
+    # FIRESTORE_EMULATOR_HOST env var (read automatically by the Google client).
+    firestore_database_id: str | None = None
+
     log_level: str = "INFO"
 
 

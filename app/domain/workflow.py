@@ -24,3 +24,8 @@ class WorkflowState(BaseModel):
     execution_ids: list[str] = Field(default_factory=list)
     active_incident_ids: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # Optimistic concurrency (Level 1.4): every persisted update must state
+    # which version it read, so a stale write fails instead of silently
+    # clobbering a concurrent one. See app.persistence.repositories.workflow.
+    version: int = Field(default=1, ge=1)
