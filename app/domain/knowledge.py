@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.domain.enums import KnowledgeType
+from app.domain.enums import KnowledgeType, RetrievalStrategy
 
 
 class KnowledgeItem(BaseModel):
@@ -22,13 +22,23 @@ class KnowledgeItem(BaseModel):
 
 
 class KnowledgeQuery(BaseModel):
-    """A record of one query an agent issued during execution (audit trail, not the request payload)."""
+    """A record of what the Knowledge Service actually executed for one request —
+    the audit trail. Contrast with KnowledgeRequest, which is what the agent asked
+    for. Fields beyond the original (agent_name, workflow_id, filters,
+    retrieval_strategy, top_k) are optional additions for Level 1.3A so existing
+    callers that only set text/knowledge_type/result_count are unaffected.
+    """
 
     query_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     text: str
     knowledge_type: KnowledgeType | None = None
     issued_at: datetime = Field(default_factory=datetime.utcnow)
     result_count: int | None = None
+    agent_name: str | None = None
+    workflow_id: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    retrieval_strategy: RetrievalStrategy | None = None
+    top_k: int | None = None
 
 
 class KnowledgeRequest(BaseModel):

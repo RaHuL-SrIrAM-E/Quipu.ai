@@ -20,6 +20,7 @@ from app.domain.enums import (
     DecisionSource,
     ErrorCategory,
     KnowledgeType,
+    RetrievalStrategy,
     WorkflowStage,
     WorkflowStatus,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "KnowledgeQuery",
     "KnowledgeRequest",
     "KnowledgeType",
+    "RetrievalStrategy",
     "Ticket",
     "ToolExecution",
     "ToolRequest",

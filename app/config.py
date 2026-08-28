@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     jira_api_token: str | None = None
     jira_project_key: str | None = None
 
+    # Agent Search (formerly Vertex AI Search / Discovery Engine) — used only by
+    # app/knowledge/backends/google_search.py, the Google retrieval adapter.
+    discovery_engine_data_store_id: str | None = None
+    discovery_engine_location: str = "global"
+    discovery_engine_serving_config_id: str = "default_search"
+    discovery_engine_timeout_seconds: float = 10.0
+
     log_level: str = "INFO"
 
 

@@ -82,3 +82,14 @@ class KnowledgeType(StrEnum):
     TECHNOLOGY_STANDARD = "technology_standard"
     HISTORICAL_PROJECT = "historical_project"
     TROUBLESHOOTING = "troubleshooting"
+    OPERATIONS = "operations"
+    INCIDENT = "incident"
+
+
+class RetrievalStrategy(StrEnum):
+    """How the Knowledge Service found a result. A contract for future retrieval
+    implementations (app/knowledge) — not implemented here."""
+
+    SEMANTIC = "semantic"
+    KEYWORD = "keyword"
+    HYBRID = "hybrid"

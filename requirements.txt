@@ -5,6 +5,7 @@ sqlalchemy
 pydantic
 pydantic-settings
 google-genai
+google-cloud-discoveryengine
 requests
 python-dotenv
 pytest
