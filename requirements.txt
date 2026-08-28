@@ -8,3 +8,4 @@ google-genai
 requests
 python-dotenv
 pytest
+pytest-asyncio
