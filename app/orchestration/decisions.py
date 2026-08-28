@@ -6,10 +6,9 @@ output shape (no `source`: the model never gets to claim it's the
 orchestrator; app.orchestration.service sets that after validating).
 """
 
-from collections import Counter
-
 from pydantic import BaseModel, Field
 
+from app.agents.deployment import DeploymentFailureClassification
 from app.agents.testing import FailureClassification
 from app.domain import Decision, DecisionAction, DecisionSource, WorkflowStage
 
@@ -25,6 +24,36 @@ _DETERMINISTIC_ROUTING: dict[FailureClassification, tuple[DecisionAction, str | 
     FailureClassification.ENVIRONMENT_FAILURE: (DecisionAction.RETRY, "testing_agent"),
     FailureClassification.UNKNOWN: (DecisionAction.ESCALATE, None),
 }
+
+
+# Deployment produces exactly one classification per attempt (not a list of
+# per-test failures like Testing), so routing is a straight lookup rather
+# than needing an ambiguous-case fallback to the LLM. BUILD_FAILURE and
+# HEALTH_CHECK_FAILURE route back to Codegen — those indicate the code
+# itself doesn't run correctly in the deployment environment, not a
+# deployment-configuration problem. PERMISSION_FAILURE and UNKNOWN escalate
+# — neither is something an automatic retry can fix.
+_DEPLOYMENT_DETERMINISTIC_ROUTING: dict[DeploymentFailureClassification, tuple[DecisionAction, str | None]] = {
+    DeploymentFailureClassification.CONFIGURATION_FAILURE: (DecisionAction.RETRY, "deployment_agent"),
+    DeploymentFailureClassification.PERMISSION_FAILURE: (DecisionAction.ESCALATE, None),
+    DeploymentFailureClassification.BUILD_FAILURE: (DecisionAction.RETRY, "codegen_agent"),
+    DeploymentFailureClassification.PLATFORM_FAILURE: (DecisionAction.RETRY, "deployment_agent"),
+    DeploymentFailureClassification.HEALTH_CHECK_FAILURE: (DecisionAction.RETRY, "codegen_agent"),
+    DeploymentFailureClassification.NETWORK_FAILURE: (DecisionAction.RETRY, "deployment_agent"),
+    DeploymentFailureClassification.UNKNOWN: (DecisionAction.ESCALATE, None),
+}
+
+
+def deployment_deterministic_action(
+    classification: DeploymentFailureClassification | None,
+) -> tuple[DecisionAction, str | None]:
+    """Always returns a routing — deployment failures are never ambiguous
+    the way a mixed Testing failure set can be, so this never falls back to
+    the orchestration LlmAgent. A missing/unrecognized classification is
+    treated the same as UNKNOWN: escalate rather than guess."""
+    if classification is None:
+        return DecisionAction.ESCALATE, None
+    return _DEPLOYMENT_DETERMINISTIC_ROUTING.get(classification, (DecisionAction.ESCALATE, None))
 
 
 class ProposedDecision(BaseModel):

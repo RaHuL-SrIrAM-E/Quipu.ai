@@ -32,6 +32,7 @@ from app.persistence.memory import (
     InMemoryWorkflowRepository,
 )
 from app.tools.codegen_tools import write_file
+from app.tools.deployment_tools import deploy_cloud_run
 from app.tools.testing_tools import run_tests
 
 VALID_PLAN = {
@@ -74,6 +75,19 @@ VALID_TESTING_PASS = {
     "environment_errors": [],
     "coverage_summary": "",
     "recommendations": [],
+}
+
+VALID_DEPLOYMENT = {
+    "deployment_summary": "Deployed theme provider to Cloud Run.",
+    "target_platform": "cloud_run",
+    "environment": "production",
+    "service_name": "quipu-demo",
+    "region": "us-central1",
+    "strategy": "revision",
+    "configuration": {"image_tag": "v1", "cpu": "1", "memory": "512Mi", "min_instances": 0, "max_instances": 2},
+    "pre_deployment_checks": ["tests passed"],
+    "rollback_strategy": "revert to previous revision via Cloud Run traffic split",
+    "risks": [{"description": "cold start latency", "mitigation": "set min_instances=1 if needed"}],
 }
 
 
@@ -182,6 +196,67 @@ def make_testing_runner(final_text: str, mode: str = "regression"):
     return _FakeRunner
 
 
+class FakeCloudRunDeployer:
+    def __init__(self, succeed: bool = True):
+        self._succeed = succeed
+
+    async def deploy(self, **kwargs):
+        from datetime import datetime, timezone
+
+        from app.core.cloud_run_client import CloudRunDeployResult
+
+        return CloudRunDeployResult(
+            status="succeeded" if self._succeed else "failed",
+            service_name=kwargs["service_name"],
+            project="test-project",
+            region=kwargs["region"],
+            revision=f"{kwargs['service_name']}-00001-abc" if self._succeed else None,
+            uri=f"https://{kwargs['service_name']}-xyz.a.run.app" if self._succeed else None,
+            message="" if self._succeed else "container failed to start",
+            deployed_at=datetime.now(timezone.utc),
+        )
+
+
+def make_deployment_runner(final_text: str, succeed: bool = True):
+    class _FakeRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _CapturingSessionService()
+
+        def run_async(self, **kwargs):
+            async def _events():
+                state = self.session_service.captured_state
+                state["_cloud_run_deployer"] = FakeCloudRunDeployer(succeed=succeed)
+                ctx = _FakeToolContext(state)
+                await deploy_cloud_run(
+                    service_name="quipu-demo",
+                    region="us-central1",
+                    environment="production",
+                    image_tag="v1",
+                    cpu="1",
+                    memory="512Mi",
+                    min_instances=0,
+                    max_instances=2,
+                    tool_context=ctx,
+                )
+                yield _FakeEvent(final_text)
+
+            return _events()
+
+    return _FakeRunner
+
+
+class _FakeCloudRunSettings:
+    cloud_run_image_registry = "gcr.io/test-project"
+    cloud_run_allowed_regions = ["us-central1"]
+    cloud_run_allowed_environments = ["development", "staging", "production"]
+    cloud_run_max_instances_ceiling = 10
+
+
+def patch_cloud_run_config(monkeypatch):
+    monkeypatch.setattr("app.tools.deployment_tools.get_settings", lambda: _FakeCloudRunSettings())
+    monkeypatch.setattr("app.agents.deployment.get_settings", lambda: _FakeCloudRunSettings())
+
+
 def make_pytest_project(root: Path, passing: bool = True) -> None:
     (root / "requirements.txt").write_text("pytest\n")
     (root / "test_theme.py").write_text(
@@ -211,13 +286,17 @@ def make_service(repos, registry=None) -> OrchestrationService:
     )
 
 
-def patch_happy_path(monkeypatch, tmp_path: Path, test_outcome: dict = None):
+def patch_happy_path(monkeypatch, tmp_path: Path, test_outcome: dict = None, deployment_succeeds: bool = True):
     monkeypatch.setattr("app.agents.planning.InMemoryRunner", make_plain_runner(json.dumps(VALID_PLAN)))
     monkeypatch.setattr("app.agents.planning.JiraClient", FakeJiraClient)
     monkeypatch.setattr("app.agents.architecture.InMemoryRunner", make_plain_runner(json.dumps(VALID_ARCHITECTURE)))
     monkeypatch.setattr("app.agents.codegen.InMemoryRunner", make_codegen_runner(json.dumps(VALID_CODEGEN)))
     monkeypatch.setattr(
         "app.agents.testing.InMemoryRunner", make_testing_runner(json.dumps(test_outcome or VALID_TESTING_PASS))
+    )
+    patch_cloud_run_config(monkeypatch)
+    monkeypatch.setattr(
+        "app.agents.deployment.InMemoryRunner", make_deployment_runner(json.dumps(VALID_DEPLOYMENT), succeed=deployment_succeeds)
     )
 
 
@@ -244,7 +323,7 @@ async def test_happy_path_reaches_completed(monkeypatch, tmp_path: Path, repos):
 
     assert final.status == WorkflowStatus.COMPLETED
     assert final.current_stage == WorkflowStage.COMPLETED
-    assert len(final.artifact_ids) == 4  # plan, architecture, code, test
+    assert len(final.artifact_ids) == 5  # plan, architecture, code, test, deployment
 
 
 @pytest.mark.asyncio
@@ -258,7 +337,7 @@ async def test_each_stage_produces_its_artifact(monkeypatch, tmp_path: Path, rep
 
     artifacts = [await repos["artifact"].get(final.workflow_id, aid) for aid in final.artifact_ids]
     types_in_order = [a.artifact_type.value for a in artifacts]
-    assert types_in_order == ["plan", "architecture", "code_change", "test_result"]
+    assert types_in_order == ["plan", "architecture", "code_change", "test_result", "deployment"]
 
 
 @pytest.mark.asyncio
@@ -274,6 +353,7 @@ async def test_artifact_lineage_preserved(monkeypatch, tmp_path: Path, repos):
     assert artifacts["architecture"].parent_artifact_ids == [artifacts["plan"].artifact_id]
     assert artifacts["code_change"].parent_artifact_ids == [artifacts["architecture"].artifact_id]
     assert artifacts["test_result"].parent_artifact_ids == [artifacts["code_change"].artifact_id]
+    assert artifacts["deployment"].parent_artifact_ids == [artifacts["code_change"].artifact_id]
 
 
 @pytest.mark.asyncio
@@ -419,8 +499,12 @@ def test_continue_from_last_stage_is_valid_and_means_complete():
     can_transition(WorkflowStage.TESTING, DecisionAction.CONTINUE, None)  # must not raise
 
 
-def test_next_stage_returns_none_after_testing():
-    assert next_stage(WorkflowStage.TESTING) is None
+def test_next_stage_returns_deployment_after_testing():
+    assert next_stage(WorkflowStage.TESTING) == WorkflowStage.DEPLOYMENT
+
+
+def test_next_stage_returns_none_after_deployment():
+    assert next_stage(WorkflowStage.DEPLOYMENT) is None
 
 
 @pytest.mark.asyncio
@@ -626,7 +710,13 @@ def test_sequential_agent_exists_for_happy_path():
     registry = build_default_registry()
     context = AgentContext(workflow_id="wf-1", execution_id="exec-1", knowledge=FakeKnowledgeGateway(), tools=FakeToolGateway(), artifacts=None)
     seq = build_happy_path_sequential_agent(registry, context)
-    assert [a.name for a in seq.sub_agents] == ["planning_agent", "architecture_agent", "codegen_agent", "testing_agent"]
+    assert [a.name for a in seq.sub_agents] == [
+        "planning_agent",
+        "architecture_agent",
+        "codegen_agent",
+        "testing_agent",
+        "deployment_agent",
+    ]
 
 
 def test_orchestration_decision_agent_uses_structured_output():

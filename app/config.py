@@ -46,7 +46,18 @@ class Settings(BaseSettings):
     max_codegen_retries: int = 2
     max_test_retries: int = 2
     max_architecture_replans: int = 1
+    max_deployment_retries: int = 2
     orchestration_loop_max_iterations: int = 3
+
+    # Cloud Run — used only by app/core/cloud_run_client.py, the Google
+    # deployment adapter. cloud_run_image_registry is app-controlled: the
+    # deployment tool builds the full image URI from this prefix + a
+    # model-supplied tag, so the model never supplies an arbitrary image URI.
+    cloud_run_image_registry: str | None = None
+    cloud_run_allowed_regions: list[str] = ["us-central1"]
+    cloud_run_allowed_environments: list[str] = ["development", "staging", "production"]
+    cloud_run_max_instances_ceiling: int = 10
+    cloud_run_deploy_timeout_seconds: float = 300.0
 
     log_level: str = "INFO"
 

@@ -37,6 +37,7 @@ from app.orchestration.decisions import (
     ProposedDecision,
     WorkflowEvidence,
     build_decision,
+    deployment_deterministic_action,
     deterministic_action,
 )
 from app.orchestration.errors import (
@@ -46,6 +47,7 @@ from app.orchestration.errors import (
     UnknownAgentError,
 )
 from app.orchestration.transitions import (
+    STAGE_INPUT_ARTIFACT_TYPE,
     STAGE_TO_AGENT_ID,
     STAGE_TO_ARTIFACT_TYPE,
     can_transition,
@@ -120,7 +122,7 @@ class OrchestrationService:
         except AgentNotFoundError as exc:
             raise UnknownAgentError(agent_id) from exc
 
-        input_artifact_id = workflow.artifact_ids[-1] if workflow.artifact_ids else None
+        input_artifact_id = await self._resolve_input_artifact_id(workflow, stage)
         execution_id = str(uuid.uuid4())
         agent_input = self._build_agent_input(workflow, agent_id, input_artifact_id, execution_id)
         context = self._agent_context(workflow, execution_id)
@@ -148,6 +150,8 @@ class OrchestrationService:
 
         if stage == WorkflowStage.TESTING:
             return await self._handle_testing_result(workflow, artifact, execution_id)
+        if stage == WorkflowStage.DEPLOYMENT:
+            return await self._handle_deployment_result(workflow, artifact, execution_id)
 
         return await self._advance_to_next_stage(workflow, artifact, execution_id)
 
@@ -197,6 +201,21 @@ class OrchestrationService:
         return workflow
 
     # ---- internals --------------------------------------------------------
+
+    async def _resolve_input_artifact_id(self, workflow: WorkflowState, stage: WorkflowStage) -> str | None:
+        """Which artifact this stage actually consumes — NOT necessarily the
+        most recently produced one (Deployment needs the CodeArtifact, not
+        the TestArtifact Testing just produced). Scans workflow.artifact_ids
+        newest-first for the first one matching the stage's declared input
+        type (see STAGE_INPUT_ARTIFACT_TYPE)."""
+        expected_type = STAGE_INPUT_ARTIFACT_TYPE.get(stage)
+        if expected_type is None:
+            return None
+        for artifact_id in reversed(workflow.artifact_ids):
+            artifact = await self._artifact_repo.get(workflow.workflow_id, artifact_id)
+            if artifact is not None and artifact.artifact_type == expected_type:
+                return artifact_id
+        return None
 
     def _build_agent_input(self, workflow: WorkflowState, agent_id: str, input_artifact_id: str | None, execution_id: str) -> AgentInput:
         context: dict = {}
@@ -249,6 +268,8 @@ class OrchestrationService:
         )
         if stage == WorkflowStage.TESTING:
             return await self._handle_testing_result(workflow, artifact, latest.execution_id)
+        if stage == WorkflowStage.DEPLOYMENT:
+            return await self._handle_deployment_result(workflow, artifact, latest.execution_id)
         return await self._advance_to_next_stage(workflow, artifact, latest.execution_id)
 
     async def _advance_to_next_stage(self, workflow: WorkflowState, artifact, execution_id: str) -> WorkflowState:
@@ -308,6 +329,31 @@ class OrchestrationService:
         proposed = await propose_decision(evidence, **kwargs)
         return await self.handle_decision(workflow.workflow_id, proposed, source=DecisionSource.AGENT)
 
+    async def _handle_deployment_result(self, workflow: WorkflowState, deployment_artifact, execution_id: str) -> WorkflowState:
+        # Durable evidence first, verdict second — same pattern as Testing.
+        workflow = workflow.model_copy(
+            update={
+                "artifact_ids": [*workflow.artifact_ids, deployment_artifact.artifact_id],
+                "execution_ids": [*workflow.execution_ids, execution_id],
+            }
+        )
+        workflow = await self._workflow_repo.update_if_version(workflow.workflow_id, workflow.version, workflow)
+
+        status = deployment_artifact.payload.get("status")
+        if status == "succeeded":
+            proposed = ProposedDecision(action=DecisionAction.CONTINUE, reason="deployment succeeded", confidence=1.0)
+            return await self.handle_decision(workflow.workflow_id, proposed, source=DecisionSource.ORCHESTRATOR)
+
+        # Deployment failures are never ambiguous the way a mixed Testing
+        # failure set can be — always deterministic, never routed to the
+        # orchestration LlmAgent. See app.orchestration.decisions.
+        classification = deployment_artifact.payload.get("failure_classification")
+        action, target = deployment_deterministic_action(classification)
+        proposed = ProposedDecision(
+            action=action, target_agent=target, reason=f"deterministic routing for deployment classification '{classification}'", confidence=0.9
+        )
+        return await self.handle_decision(workflow.workflow_id, proposed, source=DecisionSource.ORCHESTRATOR)
+
     async def _execute_decision(self, workflow: WorkflowState, decision: Decision) -> WorkflowState:
         if decision.action == DecisionAction.CONTINUE:
             nxt = next_stage(workflow.current_stage)
@@ -356,6 +402,7 @@ class OrchestrationService:
             WorkflowStage.CODEGEN: settings.max_codegen_retries,
             WorkflowStage.TESTING: settings.max_test_retries,
             WorkflowStage.ARCHITECTURE: settings.max_architecture_replans,
+            WorkflowStage.DEPLOYMENT: settings.max_deployment_retries,
         }.get(stage, 0)
 
     def _check_retry_budget(self, workflow: WorkflowState, target_agent: str | None) -> None:

@@ -1,4 +1,4 @@
-# Quipu Orchestration Layer (Level 2.0)
+# Quipu Orchestration Layer (Level 2.0, extended in Level 2.1 with Deployment)
 
 ## Normal flow
 
@@ -10,6 +10,7 @@ SequentialAgent (or step-wise OrchestrationService.execute_next_step)
   +-- Architecture
   +-- Codegen
   +-- Testing
+  +-- Deployment
 ```
 
 ## Decision flow
@@ -28,7 +29,21 @@ deterministic ProposedDecision      Orchestration LlmAgent (Gemini) -> ProposedD
                     |
          invalid? -> downgrade to ESCALATE (orchestrator, not Gemini, decides this)
                     |
-              Next Agent / terminal status
+              Next Agent (Deployment) / terminal status
+```
+
+## Deployment decision flow (Level 2.1)
+
+```
+DeploymentArtifact
+    |
+status == "succeeded"?  --yes--> ProposedDecision(CONTINUE)  [deterministic, workflow COMPLETED]
+    |no
+deployment_deterministic_action(failure_classification)   [always deterministic — never Gemini-routed,
+    |                                                        unlike Testing's mixed-classification case]
+Transition Policy (can_transition + retry budget)
+    |
+ Next Agent (deployment_agent retry, or codegen_agent) / ESCALATE
 ```
 
 ## Recovery flow
@@ -55,21 +70,23 @@ Separated cleanly from agent execution, per the task's core principle:
 |---|---|
 | reasoning, domain work, tools, capabilities, own lifecycle | workflow progression, agent selection, artifact handoffs, decisions, retry/replan routing, workflow state, recovery, escalation, orchestration-level observability |
 
-No agent (`PlanningAgent`, `ArchitectureAgent`, `CodegenAgent`, `TestingAgent`)
-imports or calls another agent, directly or through the orchestrator's
-internals — every agent-to-agent handoff goes through a persisted `Artifact`
-and `OrchestrationService`.
+No agent (`PlanningAgent`, `ArchitectureAgent`, `CodegenAgent`, `TestingAgent`,
+`DeploymentAgent`) imports or calls another agent, directly or through the
+orchestrator's internals — every agent-to-agent handoff goes through a
+persisted `Artifact` and `OrchestrationService`.
 
 ## 2. Agent Registry
 
 `app/orchestration/registry_setup.py::build_default_registry()` — one
-function, registers the four implemented agents into the existing
+function, registers the five implemented agents into the existing
 `AgentRegistry` (Level 1.2, unchanged). The orchestrator resolves agents
 exclusively through `registry.get(agent_id)`
 (`app/orchestration/transitions.py::STAGE_TO_AGENT_ID` maps stage → id) —
 nothing hardcodes `PlanningAgent()` etc. inline in the service. Adding
-Deployment/Monitoring/Detecting/Incident-Resolution later is one more
-`registry.register(...)` call plus one more `STAGE_ORDER` entry.
+Deployment (Level 2.1) was exactly this: one more `registry.register(...)`
+call plus one more `STAGE_ORDER` entry — proving out the extension point
+this section originally promised. Monitoring/Detecting/Incident-Resolution
+later is the same shape.
 
 ## 3. WorkflowState
 
@@ -87,13 +104,27 @@ already represents exactly what was needed — `workflow_id`, `agent_name`,
 would have duplicated it. The one place the task's concern ("don't rely on
 `artifact_ids[0]` as an undocumented convention") is addressed head-on:
 `OrchestrationService._build_agent_input()` is the **single, explicit,
-documented** place that decides which artifact goes into `artifact_ids` —
-`workflow.artifact_ids[-1]` (the most recently produced one). Individual
-agents (`ArchitectureAgent`, `CodegenAgent`, `TestingAgent`) still read
-`artifact_ids[0]` internally (Level 1.6-1.8, by convention — "the one input
-artifact this agent expects"), but the orchestrator is the component that
-guarantees that convention holds by construction, not an accident of caller
-discipline.
+documented** place that decides which artifact goes into `artifact_ids`.
+Individual agents (`ArchitectureAgent`, `CodegenAgent`, `TestingAgent`,
+`DeploymentAgent`) still read `artifact_ids[0]` internally (Level 1.6-1.8,
+2.1, by convention — "the one input artifact this agent expects"), but the
+orchestrator is the component that guarantees that convention holds by
+construction, not an accident of caller discipline.
+
+**Revised in Level 2.1**: the original implementation resolved input as
+`workflow.artifact_ids[-1]` (the most recently produced artifact) — correct
+for Planning→Architecture→Codegen→Testing, where each stage's input
+happens to be literally the immediately preceding stage's output, but wrong
+once Deployment was added: Deployment needs the `CodeArtifact` (Testing's
+*input*), not the `TestArtifact` Testing just produced. Fixed with an
+explicit `STAGE_INPUT_ARTIFACT_TYPE` map
+(`app/orchestration/transitions.py`) and
+`OrchestrationService._resolve_input_artifact_id()`, which scans
+`workflow.artifact_ids` newest-first and returns the first artifact
+matching the target stage's declared input type, rather than assuming
+adjacency. This generalizes correctly to any future non-adjacent stage
+dependency (e.g. a future Monitoring stage that also needs the
+`DeploymentArtifact` rather than whatever ran most recently).
 
 ## 5. Artifact-driven handoffs
 
@@ -107,11 +138,11 @@ so it becomes the next stage's documented input.
 ## 6. SequentialAgent
 
 `app/orchestration/adk/sequential.py::build_happy_path_sequential_agent()`
-constructs a **real** `google.adk.agents.SequentialAgent` with four
+constructs a **real** `google.adk.agents.SequentialAgent` with five
 `QuipuAgentAdkAdapter` sub-agents (Planning → Architecture → Codegen →
-Testing) — verified constructible and correctly ordered
-(`test_sequential_agent_exists_for_happy_path`). It is a genuine, usable
-execution mechanism, not decorative — but it is **not** the
+Testing → Deployment, extended in Level 2.1) — verified constructible and
+correctly ordered (`test_sequential_agent_exists_for_happy_path`). It is a
+genuine, usable execution mechanism, not decorative — but it is **not** the
 production-recommended default path. See §19.
 
 ## 7. Orchestration LlmAgent
@@ -167,6 +198,13 @@ multiple failures are intentionally absent from this table — those go to
 the orchestration LlmAgent (§7) rather than a default I'd have had to guess
 at.
 
+**Deployment (Level 2.1) has its own, separate, always-deterministic
+table** — `deployment_deterministic_action()` in the same module — since a
+`DeploymentArtifact` carries exactly one `failure_classification` per
+attempt, never a mixed set the way Testing's per-test failures can be, so
+there is no ambiguous case that needs the LLM at all. See
+`docs/architecture/deployment_agent.md` §11 for the full routing table.
+
 ## 9. Transition policy
 
 `app/orchestration/transitions.py::can_transition()` — the application-level
@@ -179,6 +217,11 @@ directly implementing the task's explicit "do not let the LLM request
 Testing → Planning" example
 (`test_invalid_transition_rejected`). `SKIP`/`WAIT`/`ROLLBACK` are rejected
 outright — not supported by this level's orchestrator.
+
+From `DEPLOYMENT` (Level 2.1), only `deployment_agent` (retry the
+deployment itself) and `codegen_agent` (a build/health-check failure
+suggests the code, not the deployment config, is broken) are reachable —
+never `architecture_agent` or `planning_agent`.
 
 **A rejected proposal is never silently dropped or blindly followed** —
 `OrchestrationService.handle_decision()` catches `InvalidTransitionError`
@@ -210,12 +253,23 @@ it's available as an ADK-native alternative for a caller that wants an
 in-process repair cycle without a Firestore round-trip between every
 attempt. Documented as a real but secondary mechanism, not vaporware.
 
+**Deliberately not extended to Deployment (Level 2.1)**: this `LoopAgent`
+remains scoped to Codegen↔Testing recovery only. Deployment retries and
+escalations are handled entirely through `OrchestrationService`'s own
+deterministic routing (`deployment_deterministic_action`, §8) and the
+step-wise retry flow (§12/§11) — not through this ADK `LoopAgent`
+construct. A deployment failure that should route back to Codegen goes
+through the normal step-wise `RETRY` mechanism, not an in-process loop that
+would re-run Deployment against a possibly-still-broken image without a
+durable checkpoint in between.
+
 ## 11. Retry semantics
 
 `app.config.Settings`: `max_codegen_retries` (2), `max_test_retries` (2),
-`max_architecture_replans` (1), `orchestration_loop_max_iterations` (3) —
-all named, typed, externalized settings, not literals scattered through the
-codebase. Retry counts are tracked per-target-agent in
+`max_architecture_replans` (1), `max_deployment_retries` (2, added Level
+2.1), `orchestration_loop_max_iterations` (3) — all named, typed,
+externalized settings, not literals scattered through the codebase. Retry
+counts are tracked per-target-agent in
 `WorkflowState.metadata["retry_count:<agent_id>"]` (no new persistence
 model — reuses the existing `metadata: dict` field). Budget exhaustion
 (`_check_retry_budget`) raises `RetryLimitExceededError`, caught by
@@ -341,7 +395,7 @@ Two ways to run the happy path exist, both real:
    **recommended default**, because it's what makes §14/§15 (concurrency,
    crash recovery) actually work: each stage's durable evidence lands in
    Firestore before the next stage even starts.
-2. **The real `SequentialAgent`** (§6) — all four stages in one ADK
+2. **The real `SequentialAgent`** (§6) — all five stages in one ADK
    session. Faster for a single synchronous call; if the process dies
    mid-sequence, everything after the last `QuipuAgentAdkAdapter`'s own
    agent-level persistence (which still happens — each `QuipuAgent`
@@ -364,12 +418,21 @@ invocation (workflow id, agent id, execution id), every workflow failure
 reconciliation event. No secrets or full code artifacts are logged —
 messages reference ids and short reasons, never artifact payloads.
 
-## 20. Future Deployment/Monitoring/Incident integration
+## 20. Deployment integration (Level 2.1) / future Monitoring-Incident scope
 
+Deployment was wired in exactly the way §2/§20 (original) predicted:
 `STAGE_ORDER`/`STAGE_TO_AGENT_ID`/`STAGE_TO_ARTIFACT_TYPE`
-(`app/orchestration/transitions.py`) are the only places a new stage needs
-to be added — plus one `registry.register(...)` call
-(`registry_setup.py`) and one new artifact type if needed. Nothing else in
-`OrchestrationService` assumes exactly four stages. Deployment is
-deliberately **not** wired in this level — the happy path stops at
-`COMPLETED` after Testing passes, per explicit scope.
+(`app/orchestration/transitions.py`) gained one entry each, plus
+`STAGE_INPUT_ARTIFACT_TYPE` (new — see §4) and
+`_ALLOWED_RETRY_TARGETS[DEPLOYMENT]` (see §9), one
+`registry.register(DeploymentAgent())` call (`registry_setup.py`), and
+`OrchestrationService._handle_deployment_result()` alongside the existing
+`_handle_testing_result()`. No new artifact type was needed
+(`ArtifactType.DEPLOYMENT` already existed). See
+`docs/architecture/deployment_agent.md` §11 for the full detail.
+
+The happy path now stops at `COMPLETED` after Deployment succeeds, rather
+than after Testing passes. `STAGE_ORDER` is still the single place a future
+stage needs to be added — nothing else in `OrchestrationService` assumes a
+fixed stage count. Monitoring/Detecting/Incident-Resolution remain
+deliberately **not** wired, per explicit scope for both Level 2.0 and 2.1.
