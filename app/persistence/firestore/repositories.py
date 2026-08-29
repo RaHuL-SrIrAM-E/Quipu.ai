@@ -27,15 +27,17 @@ from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.domain import AgentExecution, Artifact, Decision, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.firestore.errors import translate_firestore_error
+from app.persistence.repositories.detection import DetectionQuery
 from app.persistence.repositories.incident import IncidentRecord
 from app.persistence.repositories.signal import SignalQuery
 from app.persistence.serialization import from_firestore_dict, to_firestore_dict
 
 _WORKFLOWS = "workflows"
 _SIGNALS = "signals"
+_DETECTIONS = "detections"
 
 
 async def _update_workflow_txn(
@@ -346,3 +348,65 @@ class FirestoreSignalRepository:
             return results
         except google_exceptions.GoogleAPICallError as exc:
             raise translate_firestore_error(exc, "Signal", "query") from exc
+
+
+class FirestoreDetectionRepository:
+    """Top-level `detections/{detection_id}` collection — not workflow-scoped,
+    same rationale as FirestoreSignalRepository (a DetectionResult isn't
+    scoped to a workflow either). See app.persistence.repositories.detection
+    module docstring."""
+
+    def __init__(self, client: "firestore.AsyncClient"):
+        self._client = client
+
+    def _collection(self):
+        return self._client.collection(_DETECTIONS)
+
+    async def save(self, detection: DetectionResult) -> DetectionResult:
+        try:
+            await self._collection().document(detection.detection_id).set(to_firestore_dict(detection))
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "DetectionResult", detection.detection_id) from exc
+        return detection
+
+    async def get(self, detection_id: str) -> DetectionResult | None:
+        try:
+            snapshot = await self._collection().document(detection_id).get()
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "DetectionResult", detection_id) from exc
+        if not snapshot.exists:
+            return None
+        return from_firestore_dict(DetectionResult, snapshot.to_dict())
+
+    async def find_by_fingerprint(self, fingerprint: str) -> DetectionResult | None:
+        try:
+            query = self._collection().where(filter=FieldFilter("fingerprint", "==", fingerprint)).limit(1)
+            async for snapshot in query.stream():
+                return from_firestore_dict(DetectionResult, snapshot.to_dict())
+            return None
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "DetectionResult", fingerprint) from exc
+
+    async def query(self, query: DetectionQuery) -> list[DetectionResult]:
+        firestore_query = self._collection()
+        if query.detection_type is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("detection_type", "==", query.detection_type.value))
+        if query.domain is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("domain", "==", query.domain.value))
+        if query.service_name is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("service_name", "==", query.service_name))
+        if query.environment is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("environment", "==", query.environment))
+        if query.since is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("detected_at", ">=", query.since))
+        if query.until is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("detected_at", "<=", query.until))
+        firestore_query = firestore_query.order_by("detected_at", direction=firestore.Query.DESCENDING).limit(query.limit)
+
+        try:
+            results = []
+            async for snapshot in firestore_query.stream():
+                results.append(from_firestore_dict(DetectionResult, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "DetectionResult", "query") from exc

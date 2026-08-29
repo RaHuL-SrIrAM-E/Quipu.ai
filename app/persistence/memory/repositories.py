@@ -5,8 +5,9 @@ semantics as FirestoreWorkflowRepository, so tests exercise real concurrency
 behaviour without needing a live Firestore connection.
 """
 
-from app.domain import AgentExecution, Artifact, Decision, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
+from app.persistence.repositories.detection import DetectionQuery
 from app.persistence.repositories.incident import IncidentRecord
 from app.persistence.repositories.signal import SignalQuery
 
@@ -162,4 +163,44 @@ class InMemorySignalRepository:
                 continue
             results.append(signal.model_copy(deep=True))
         results.sort(key=lambda s: s.observed_at, reverse=True)
+        return results[: query.limit]
+
+
+class InMemoryDetectionRepository:
+    def __init__(self):
+        self._store: dict[str, DetectionResult] = {}
+        self._by_fingerprint: dict[str, str] = {}  # fingerprint -> detection_id
+
+    async def save(self, detection: DetectionResult) -> DetectionResult:
+        self._store[detection.detection_id] = detection.model_copy(deep=True)
+        self._by_fingerprint[detection.fingerprint] = detection.detection_id
+        return detection.model_copy(deep=True)
+
+    async def get(self, detection_id: str) -> DetectionResult | None:
+        detection = self._store.get(detection_id)
+        return detection.model_copy(deep=True) if detection else None
+
+    async def find_by_fingerprint(self, fingerprint: str) -> DetectionResult | None:
+        detection_id = self._by_fingerprint.get(fingerprint)
+        if detection_id is None:
+            return None
+        return await self.get(detection_id)
+
+    async def query(self, query: DetectionQuery) -> list[DetectionResult]:
+        results = []
+        for detection in self._store.values():
+            if query.detection_type is not None and detection.detection_type != query.detection_type:
+                continue
+            if query.domain is not None and detection.domain != query.domain:
+                continue
+            if query.service_name is not None and detection.service_name != query.service_name:
+                continue
+            if query.environment is not None and detection.environment != query.environment:
+                continue
+            if query.since is not None and detection.detected_at < query.since:
+                continue
+            if query.until is not None and detection.detected_at > query.until:
+                continue
+            results.append(detection.model_copy(deep=True))
+        results.sort(key=lambda d: d.detected_at, reverse=True)
         return results[: query.limit]

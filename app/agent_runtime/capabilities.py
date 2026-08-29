@@ -35,6 +35,19 @@ class AgentCapability(StrEnum):
     WRITE_ARTIFACT = "write_artifact"
     WRITE_JIRA = "write_jira"
 
+    # Level 3.2 (DetectingAgent): reading persisted Signal evidence through
+    # SignalGateway is a distinct concern from READ_MONITORING (which gates
+    # calling the *live* Cloud Monitoring/Logging APIs — MonitoringAgent's
+    # concern). Detecting never touches those APIs directly, only the
+    # already-collected, already-sanitized Signal record — hence a separate,
+    # narrower capability rather than reusing READ_MONITORING. WRITE_DETECTION
+    # mirrors WRITE_ARTIFACT's role for every other agent: permission to
+    # persist the agent's OWN structured output/audit record (DetectionResult)
+    # through DetectionGateway — not a real-world mutation capability like
+    # DEPLOY/WRITE_CODE, so it stays part of Detecting's read-only posture.
+    READ_SIGNALS = "read_signals"
+    WRITE_DETECTION = "write_detection"
+
 
 class CapabilityError(RuntimeError):
     """Raised when an agent attempts to act outside its granted capabilities."""

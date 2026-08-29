@@ -10,6 +10,7 @@ from logging import Logger
 from typing import Any
 
 from app.agent_runtime.gateways.artifacts import ArtifactGateway
+from app.agent_runtime.gateways.detections import DetectionGateway
 from app.agent_runtime.gateways.knowledge import KnowledgeGateway
 from app.agent_runtime.gateways.signals import SignalGateway
 from app.agent_runtime.gateways.tools import ToolGateway
@@ -40,3 +41,8 @@ class AgentContext:
     # uses this today — every other existing agent leaves it None and is
     # unaffected, since it defaults to None like `executions` did.
     signals: SignalGateway | None = None
+
+    # Optional (Level 3.2 bridge, same shape as `signals` above): lets an
+    # agent persist DetectionResults through DetectionRepository. Only
+    # DetectingAgent uses this today.
+    detections: DetectionGateway | None = None

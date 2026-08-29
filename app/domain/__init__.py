@@ -14,10 +14,13 @@ from app.domain.agent_io import (
 )
 from app.domain.artifact import Artifact
 from app.domain.decision import Decision
+from app.domain.detection import DetectionResult, compute_detection_fingerprint
 from app.domain.enums import (
     ArtifactType,
     DecisionAction,
     DecisionSource,
+    DetectionDomain,
+    DetectionType,
     ErrorCategory,
     KnowledgeType,
     RetrievalStrategy,
@@ -45,6 +48,9 @@ __all__ = [
     "Decision",
     "DecisionAction",
     "DecisionSource",
+    "DetectionDomain",
+    "DetectionResult",
+    "DetectionType",
     "ErrorCategory",
     "KnowledgeItem",
     "KnowledgeQuery",
@@ -63,5 +69,6 @@ __all__ = [
     "WorkflowStage",
     "WorkflowState",
     "WorkflowStatus",
+    "compute_detection_fingerprint",
     "compute_fingerprint",
 ]

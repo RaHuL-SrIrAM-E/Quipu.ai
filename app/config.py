@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     monitoring_error_rate_critical_threshold: float = 0.15
     monitoring_api_timeout_seconds: float = 30.0
 
+    # Detecting Agent — used only by app/agents/detecting.py. Deliberately a
+    # separate, larger window ceiling than monitoring_max_window_minutes
+    # above: Monitoring bounds a *live Cloud API* query (hours at most is
+    # sensible); Detecting reads already-persisted Signals and product
+    # detection genuinely needs weeks-scale windows (see
+    # docs/architecture/detecting_agent.md §4). detecting_max_signals bounds
+    # how much evidence is ever assembled into one Gemini prompt — the
+    # context-management ceiling, never a raw Signal dump.
+    detecting_default_window_minutes: int = 60
+    detecting_max_window_minutes: int = 43200  # 30 days
+    detecting_max_signals: int = 50
+
     log_level: str = "INFO"
 
 

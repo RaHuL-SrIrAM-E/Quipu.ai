@@ -150,6 +150,29 @@ class SignalSeverity(StrEnum):
     CRITICAL = "critical"
 
 
+class DetectionDomain(StrEnum):
+    """Which kind of question Detecting was asked to answer — determines
+    both the default Signal types retrieved as evidence and how the result
+    should be read (an operational detection targets INCIDENT; a product
+    detection targets FEATURE_OPPORTUNITY). Not itself part of the model's
+    structured output — the caller (DetectingInput) fixes it before any
+    retrieval or reasoning happens."""
+
+    OPERATIONAL = "operational"
+    PRODUCT = "product"
+
+
+class DetectionType(StrEnum):
+    """What Detecting concluded the evidence represents. A closed set
+    deliberately smaller than the eventual Candidate vocabulary
+    (IncidentCandidate/FeatureCandidate, both future work) — Detecting
+    itself only needs to distinguish these three outcomes."""
+
+    INCIDENT = "incident"
+    FEATURE_OPPORTUNITY = "feature_opportunity"
+    NO_ACTION = "no_action"  # evidence retrieved but not sufficient/coherent enough to act on
+
+
 class SignalStatus(StrEnum):
     """Ingestion-pipeline state, NOT Detecting's interpretation of the
     signal. A Signal's evidence fields never change across these states —
