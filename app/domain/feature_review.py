@@ -74,6 +74,16 @@ class FeatureReview(BaseModel):
     ticket_id: str | None = None
     ticket: Ticket | None = None
 
+    # Level 3.5 (Feature -> SDLC Workflow Integration): set once
+    # OrchestrationService.start_workflow_from_review() has started (or
+    # claimed) a WorkflowState for this review — the idempotency boundary
+    # that keeps a repeated "start the workflow for this approved feature"
+    # request from ever producing two workflows. Never set by
+    # FeatureReviewService itself (see app/feature_review/service.py's
+    # module docstring: it does not know how the SDLC pipeline executes) —
+    # only the orchestration layer writes this field.
+    workflow_id: str | None = None
+
     created_at: datetime = Field(default_factory=_utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

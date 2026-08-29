@@ -27,6 +27,7 @@ from app.domain import (
     Decision,
     DecisionAction,
     DecisionSource,
+    ReviewStatus,
     Ticket,
     WorkflowStage,
     WorkflowState,
@@ -53,9 +54,11 @@ from app.orchestration.transitions import (
     can_transition,
     next_stage,
 )
+from app.persistence.errors import VersionConflictError
 from app.persistence.repositories.artifact import ArtifactRepository
 from app.persistence.repositories.decision import DecisionRepository
 from app.persistence.repositories.execution import AgentExecutionRepository
+from app.persistence.repositories.feature_review import FeatureReviewRepository
 from app.persistence.repositories.workflow import WorkflowRepository
 
 logger = get_logger("quipu.orchestration.service")
@@ -75,6 +78,7 @@ class OrchestrationService:
         knowledge_gateway: KnowledgeGateway,
         tool_gateway: ToolGateway,
         decision_runner_cls=None,
+        review_repo: FeatureReviewRepository | None = None,
     ):
         self._workflow_repo = workflow_repo
         self._artifact_repo = artifact_repo
@@ -85,18 +89,105 @@ class OrchestrationService:
         self._knowledge_gateway = knowledge_gateway
         self._tool_gateway = tool_gateway
         self._decision_runner_cls = decision_runner_cls  # injectable for tests; None -> propose_decision's own default
+        # Optional (Level 3.5): only needed by start_workflow_from_review().
+        # None is valid for every caller that doesn't use that entry point —
+        # existing construction sites are unaffected.
+        self._review_repo = review_repo
 
     # ---- public API -----------------------------------------------------
 
-    async def start_workflow(self, ticket: Ticket, *, workspace_path: str | None = None) -> WorkflowState:
-        workflow = WorkflowState(
-            ticket=ticket,
-            status=WorkflowStatus.PENDING,
-            current_stage=WorkflowStage.PLANNING,
-            metadata={"workspace_path": workspace_path} if workspace_path else {},
+    async def start_workflow(
+        self,
+        ticket: Ticket,
+        *,
+        workspace_path: str | None = None,
+        workflow_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> WorkflowState:
+        """The single workflow-creation entry point — start_workflow_from_review
+        (Level 3.5) builds on this rather than duplicating it. `workflow_id`
+        and `metadata` are additive, optional parameters: existing callers
+        that only pass `ticket` (and maybe `workspace_path`) are unaffected.
+        `workflow_id` lets a caller pre-claim an id (see
+        start_workflow_from_review's idempotency design) instead of
+        accepting WorkflowState's own default_factory uuid."""
+        combined_metadata = dict(metadata or {})
+        if workspace_path:
+            combined_metadata["workspace_path"] = workspace_path
+        kwargs: dict = dict(
+            ticket=ticket, status=WorkflowStatus.PENDING, current_stage=WorkflowStage.PLANNING, metadata=combined_metadata
         )
+        if workflow_id is not None:
+            kwargs["workflow_id"] = workflow_id
+        workflow = WorkflowState(**kwargs)
         await self._workflow_repo.create(workflow)
         logger.info("workflow %s started for ticket '%s'", workflow.workflow_id, ticket.title)
+        return workflow
+
+    async def start_workflow_from_review(self, review_id: str) -> WorkflowState:
+        """Level 3.5 — the Feature Review -> SDLC entry point (§2-4 of the
+        task). Deliberately lives here, not in FeatureReviewService:
+        FeatureReviewService owns the review/ticket decision, this service
+        owns workflow execution — see docs/architecture/feature_to_sdlc.md
+        "Responsibility boundary". Requires only a FeatureReviewRepository
+        (constructor-injected); never invokes PlanningAgent directly — it
+        creates a WorkflowState at WorkflowStage.PLANNING exactly like
+        start_workflow() always has, and execute_next_step() (unchanged)
+        is what actually runs Planning, through the same AgentRegistry/
+        AgentInput/AgentContext/capability path every other workflow uses.
+
+        Validates (§22 adversarial A/B): the review must exist, be
+        APPROVED, and have an associated ticket — a PENDING or REJECTED
+        review, or one somehow missing its ticket, raises OrchestrationError
+        rather than starting anything. Idempotent (§10/§11): a review that
+        already has a workflow_id returns that existing WorkflowState (or,
+        if the claim succeeded but the workflow was never actually created
+        — e.g. a crash in between — creates it now using the already-claimed
+        id, rather than either erroring forever or claiming a second id).
+        Concurrency-safe via FeatureReviewRepository.update_if_version: two
+        simultaneous callers can both read workflow_id=None, but only one
+        can win the version-checked claim write; the loser re-reads and
+        returns the winner's workflow. See docs/architecture/feature_to_sdlc.md
+        "Idempotency and concurrency" for the documented limitation this
+        does NOT claim to solve (a crash after the claim write but before
+        WorkflowRepository.create ever runs is recovered by the next call,
+        not by this one)."""
+        if self._review_repo is None:
+            raise OrchestrationError("FeatureReviewRepository is not configured — cannot start a workflow from a review")
+
+        review = await self._review_repo.get(review_id)
+        if review is None:
+            raise OrchestrationError(f"FeatureReview '{review_id}' not found")
+        if review.status != ReviewStatus.APPROVED:
+            raise OrchestrationError(f"FeatureReview '{review_id}' is not approved (status='{review.status.value}')")
+        if review.ticket is None:
+            raise OrchestrationError(f"FeatureReview '{review_id}' has no associated ticket")
+
+        review_metadata = {"source": "feature_review", "review_id": review.review_id, "source_detection_id": review.detection_id}
+
+        if review.workflow_id is not None:
+            existing = await self._workflow_repo.get(review.workflow_id)
+            if existing is not None:
+                return existing
+            logger.info("workflow %s was claimed by FeatureReview %s but never created — creating it now", review.workflow_id, review_id)
+            return await self.start_workflow(review.ticket, workflow_id=review.workflow_id, metadata=review_metadata)
+
+        candidate_workflow_id = str(uuid.uuid4())
+        claim = review.model_copy(update={"workflow_id": candidate_workflow_id})
+        try:
+            await self._review_repo.update_if_version(review_id, review.version, claim)
+        except VersionConflictError:
+            current = await self._review_repo.get(review_id)
+            if current is not None and current.workflow_id is not None:
+                existing = await self._workflow_repo.get(current.workflow_id)
+                if existing is not None:
+                    return existing
+            raise
+
+        workflow = await self.start_workflow(review.ticket, workflow_id=candidate_workflow_id, metadata=review_metadata)
+        logger.info(
+            "workflow %s started from approved FeatureReview %s (detection %s)", workflow.workflow_id, review_id, review.detection_id
+        )
         return workflow
 
     async def execute_next_step(self, workflow_id: str) -> WorkflowState:

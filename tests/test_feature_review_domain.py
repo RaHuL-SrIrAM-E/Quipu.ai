@@ -1,5 +1,5 @@
-"""Domain-level tests for FeatureReview (Level 3.4). No persistence, no
-service — just the model."""
+"""Domain-level tests for FeatureReview (Level 3.4, extended Level 3.5). No
+persistence, no service — just the model."""
 
 from datetime import datetime, timezone
 
@@ -122,3 +122,16 @@ def test_review_distinct_from_detection_and_signal_and_ticket():
     assert FeatureReview is not Ticket
     assert "signal_type" not in FeatureReview.model_fields
     assert "detection_type" not in FeatureReview.model_fields
+
+
+# ---- Level 3.5: workflow_id (Feature -> SDLC integration) --------------------
+
+
+def test_workflow_id_defaults_none():
+    review = make_review()
+    assert review.workflow_id is None
+
+
+def test_workflow_id_can_be_set():
+    review = make_review(workflow_id="wf-123")
+    assert review.workflow_id == "wf-123"
