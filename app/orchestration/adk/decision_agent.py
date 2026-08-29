@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.core.observability import get_logger
+from app.core.resilience.timeout import with_timeout
 from app.domain import DecisionAction
 from app.orchestration.decisions import ProposedDecision, WorkflowEvidence
 
@@ -67,9 +68,13 @@ async def propose_decision(evidence: WorkflowEvidence, runner_cls: type = InMemo
 
     final_text = ""
     try:
-        async for event in runner.run_async(user_id=evidence.workflow_id, session_id=session.id, new_message=message):
-            if event.is_final_response() and event.content and event.content.parts:
-                final_text = event.content.parts[0].text
+        async def _consume_llm_response() -> None:
+            nonlocal final_text
+            async for event in runner.run_async(user_id=evidence.workflow_id, session_id=session.id, new_message=message):
+                if event.is_final_response() and event.content and event.content.parts:
+                    final_text = event.content.parts[0].text
+
+        await with_timeout(_consume_llm_response(), settings.llm_call_timeout_seconds, operation="orchestration_decision_llm_call")
     except Exception:
         logger.exception("orchestration decision agent execution failed")
         return ProposedDecision(action=DecisionAction.ESCALATE, reason="orchestration decision agent execution failed", confidence=0.0)

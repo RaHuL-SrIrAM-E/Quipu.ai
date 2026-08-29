@@ -215,6 +215,32 @@ class Settings(BaseSettings):
     verification_max_signals_per_condition: int = 20
     verification_latency_p99_threshold_ms: float = 500.0
 
+    # Resilience layer — used only by app/core/resilience/ and the exact
+    # external-boundary call sites it wraps (see
+    # docs/architecture/resilience.md). Google Cloud SDK clients already
+    # have their own timeout= kwargs (unrelated to this section);
+    # llm_call_timeout_seconds is the one genuine gap this closes — the
+    # ADK runner loop (every agent's Gemini call) had no bound before.
+    llm_call_timeout_seconds: float = 60.0
+    jira_retry_max_attempts: int = 3
+    jira_retry_base_delay_seconds: float = 0.5
+    jira_circuit_breaker_failure_threshold: int = 5
+    jira_circuit_breaker_recovery_timeout_seconds: float = 30.0
+
+    # Demo scenario seeding — used only by app/api/routes/demo.py.
+    # Explicitly opt-in (default False, same convention as
+    # api_serve_ui): the route is not even registered on the FastAPI app
+    # unless this is true, so it 404s rather than merely being
+    # "disabled" when off. Never enable in a real production deployment.
+    demo_endpoints_enabled: bool = False
+
+    # Control Plane API — run-to-completion command
+    # (POST /workflows/{id}/run, app/api/routes/workflows.py). Bounds how
+    # many execute_next_step() iterations one request may perform, so a
+    # misbehaving workflow can never turn one HTTP request into an
+    # unbounded loop.
+    workflow_run_max_iterations: int = 20
+
     log_level: str = "INFO"
 
 

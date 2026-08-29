@@ -83,6 +83,16 @@ def create_app(container: ApiContainer | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(api_router)
 
+    if settings.demo_endpoints_enabled:
+        # Registered ONLY when explicitly enabled — when false, these
+        # paths don't exist at all (a plain 404 from FastAPI's own
+        # routing, not an internal "disabled" check a request could ever
+        # reach). See app/api/routes/demo.py.
+        from app.api.routes.demo import router as demo_router
+
+        app.include_router(demo_router)
+        logger.warning("api.demo_endpoints_enabled — do not use in a real production deployment")
+
     if settings.api_serve_ui and _UI_DIST_DIR.is_dir():
         app.mount("/", StaticFiles(directory=_UI_DIST_DIR, html=True), name="ui")
         logger.info("api.ui_mounted path=%s", _UI_DIST_DIR)

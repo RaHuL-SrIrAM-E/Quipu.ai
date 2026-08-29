@@ -12,10 +12,13 @@ from fastapi import APIRouter, Depends
 from app.api.container import ApiContainer
 from app.api.dependencies import get_container
 from app.api.pagination import bounded_limit
-from app.api.schemas.workflows import ArtifactSummary, DecisionSummary, ExecutionSummary, WorkflowDetail, WorkflowSummary
+from app.api.schemas.workflows import ArtifactSummary, DecisionSummary, ExecutionSummary, WorkflowDetail, WorkflowRunResult, WorkflowSummary
+from app.config import get_settings
 from app.core.observability import get_logger
 from app.domain import WorkflowStatus
 from app.persistence.errors import EntityNotFoundError
+
+_HUMAN_ACTION_STATUSES = {WorkflowStatus.ESCALATED, WorkflowStatus.FAILED, WorkflowStatus.BLOCKED}
 
 logger = get_logger("quipu.api.workflows")
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -65,6 +68,60 @@ async def list_workflow_decisions(workflow_id: str, container: ApiContainer = De
     await _get_workflow_or_404(container, workflow_id)
     decisions = await container.decision_repo.list_for_workflow(workflow_id)
     return [DecisionSummary.from_domain(d) for d in decisions]
+
+
+@router.post("/{workflow_id}/run", response_model=WorkflowRunResult)
+async def run_workflow(workflow_id: str, container: ApiContainer = Depends(get_container)) -> WorkflowRunResult:
+    """Delegates entirely to OrchestrationService.run_to_completion() —
+    the SAME existing step-wise execute_next_step() loop the '/step'
+    command uses, just repeated (bounded by
+    Settings.workflow_run_max_iterations) until a terminal status or the
+    iteration cap is hit. No second workflow engine, no direct agent
+    invocation, no bypass of transition policy/retry budgets/capability
+    checks/Firestore versioning — everything below this route is
+    identical to what a human clicking 'Run Next Step' repeatedly would
+    produce. Safe to call repeatedly: a workflow already in a terminal
+    status (COMPLETED/FAILED/ESCALATED/CANCELLED) is returned unchanged
+    by execute_next_step() itself, so re-invoking this endpoint never
+    duplicates completed work."""
+    initial = await _get_workflow_or_404(container, workflow_id)
+    initial_decision_count = len(await container.decision_repo.list_for_workflow(workflow_id))
+
+    started = time.perf_counter()
+    final = await container.orchestration.run_to_completion(workflow_id, max_steps=get_settings().workflow_run_max_iterations)
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    new_artifact_ids = [a for a in final.artifact_ids if a not in initial.artifact_ids]
+    stages_executed = []
+    for artifact_id in new_artifact_ids:
+        artifact = await container.artifact_repo.get(workflow_id, artifact_id)
+        if artifact is not None:
+            stages_executed.append(artifact.artifact_type.value)
+    final_decision_count = len(await container.decision_repo.list_for_workflow(workflow_id))
+    retries_used = sum(v for k, v in final.metadata.items() if isinstance(v, int) and k.startswith("retry_count:"))
+
+    result = WorkflowRunResult(
+        workflow_id=workflow_id,
+        initial_stage=initial.current_stage,
+        final_stage=final.current_stage,
+        final_status=final.status,
+        stages_executed=stages_executed,
+        artifacts_created=len(new_artifact_ids),
+        decisions_created=final_decision_count - initial_decision_count,
+        retries_used=retries_used,
+        duration_ms=duration_ms,
+        human_action_required=final.status in _HUMAN_ACTION_STATUSES,
+    )
+    logger.info(
+        "api.command op=run_workflow workflow_id=%s initial_stage=%s final_stage=%s final_status=%s stages_executed=%d duration_ms=%.1f",
+        workflow_id,
+        result.initial_stage.value,
+        result.final_stage.value,
+        result.final_status.value,
+        len(stages_executed),
+        duration_ms,
+    )
+    return result
 
 
 @router.post("/{workflow_id}/step", response_model=WorkflowDetail)

@@ -31,18 +31,32 @@ export function WorkflowDetail() {
               description={w.ticket_description}
               actions={
                 isActive ? (
-                  <CommandButton
-                    label="Run Next Step"
-                    confirmLabel="Run step"
-                    description="This will advance the workflow exactly one stage forward through OrchestrationService.execute_next_step — the same step-wise execution every agent invocation already uses."
-                    onRun={() => api.stepWorkflow(id)}
-                    onSuccess={() => {
-                      workflow.refresh();
-                      artifacts.refresh();
-                      executions.refresh();
-                      decisions.refresh();
-                    }}
-                  />
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <CommandButton
+                      label="Run Next Step"
+                      confirmLabel="Run step"
+                      description="This will advance the workflow exactly one stage forward through OrchestrationService.execute_next_step — the same step-wise execution every agent invocation already uses."
+                      onRun={() => api.stepWorkflow(id)}
+                      onSuccess={() => {
+                        workflow.refresh();
+                        artifacts.refresh();
+                        executions.refresh();
+                        decisions.refresh();
+                      }}
+                    />
+                    <CommandButton
+                      label="Run Workflow"
+                      confirmLabel="Run to completion"
+                      description="This will repeatedly advance the workflow through OrchestrationService.run_to_completion until it reaches a terminal status, is blocked waiting on a human, or hits the configured iteration cap — the same execute_next_step loop as Run Next Step, just repeated automatically."
+                      onRun={() => api.runWorkflow(id)}
+                      onSuccess={() => {
+                        workflow.refresh();
+                        artifacts.refresh();
+                        executions.refresh();
+                        decisions.refresh();
+                      }}
+                    />
+                  </div>
                 ) : null
               }
             />

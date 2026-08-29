@@ -32,6 +32,7 @@ from app.agents.architecture import ArchitectureOutput
 from app.agents.planning import _non_empty, _tool_capability_gate, _track_usage_metrics
 from app.config import get_settings
 from app.core.observability import get_logger
+from app.core.resilience.timeout import with_timeout
 from app.domain import (
     AgentError,
     AgentExecution,
@@ -287,9 +288,13 @@ class CodegenAgent(QuipuAgent):
 
         final_text = ""
         try:
-            async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
-                if event.is_final_response() and event.content and event.content.parts:
-                    final_text = event.content.parts[0].text
+            async def _consume_llm_response() -> None:
+                nonlocal final_text
+                async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
+                    if event.is_final_response() and event.content and event.content.parts:
+                        final_text = event.content.parts[0].text
+
+            await with_timeout(_consume_llm_response(), settings.llm_call_timeout_seconds, operation="codegen_agent_llm_call")
         except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a change.
             logger.exception("codegen agent LLM execution failed")
             return await _fail("CODEGEN_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)

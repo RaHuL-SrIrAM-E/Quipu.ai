@@ -21,6 +21,30 @@ export type WorkflowStage =
   | "monitoring"
   | "completed";
 
+export interface WorkflowRunResult {
+  workflow_id: string;
+  initial_stage: WorkflowStage;
+  final_stage: WorkflowStage;
+  final_status: WorkflowStatus;
+  stages_executed: string[];
+  artifacts_created: number;
+  decisions_created: number;
+  retries_used: number;
+  duration_ms: number;
+  human_action_required: boolean;
+}
+
+export interface DemoScenarioResult {
+  scenario: string;
+  workflow_id: string | null;
+  signal_ids: string[];
+  detection_id: string | null;
+  review_id: string | null;
+  resolution_id: string | null;
+  verification_status: string;
+  already_seeded: boolean;
+}
+
 export interface WorkflowSummary {
   workflow_id: string;
   ticket_title: string;

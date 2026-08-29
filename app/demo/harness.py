@@ -115,16 +115,37 @@ class DemoHarness:
     the same guarantee every prior level's persistence layer already
     established."""
 
-    def __init__(self) -> None:
-        self.signal_repo = InMemorySignalRepository()
-        self.detection_repo = InMemoryDetectionRepository()
-        self.resolution_repo = InMemoryResolutionRepository()
-        self.review_repo = InMemoryFeatureReviewRepository()
-        self.workflow_repo = InMemoryWorkflowRepository()
-        self.artifact_repo = InMemoryArtifactRepository()
-        self.execution_repo = InMemoryAgentExecutionRepository()
-        self.decision_repo = InMemoryDecisionRepository()
-        self.verification_repo = InMemoryRemediationVerificationRepository()
+    def __init__(
+        self,
+        *,
+        signal_repo=None,
+        detection_repo=None,
+        resolution_repo=None,
+        review_repo=None,
+        workflow_repo=None,
+        artifact_repo=None,
+        execution_repo=None,
+        decision_repo=None,
+        verification_repo=None,
+    ) -> None:
+        """Every repository is independently injectable — defaulting to a
+        fresh InMemory* implementation, exactly as before, when not
+        supplied (every existing call site, `DemoHarness()`, is
+        unaffected). This is what lets app/api/routes/demo.py (the
+        opt-in demo-seeding endpoint) run these SAME deterministic
+        scenarios directly against a live Control Plane API's own
+        repositories, instead of into a disposable, invisible set the API
+        could never read back — see
+        docs/architecture/end_to_end_demo.md 'Seeding a live API'."""
+        self.signal_repo = signal_repo or InMemorySignalRepository()
+        self.detection_repo = detection_repo or InMemoryDetectionRepository()
+        self.resolution_repo = resolution_repo or InMemoryResolutionRepository()
+        self.review_repo = review_repo or InMemoryFeatureReviewRepository()
+        self.workflow_repo = workflow_repo or InMemoryWorkflowRepository()
+        self.artifact_repo = artifact_repo or InMemoryArtifactRepository()
+        self.execution_repo = execution_repo or InMemoryAgentExecutionRepository()
+        self.decision_repo = decision_repo or InMemoryDecisionRepository()
+        self.verification_repo = verification_repo or InMemoryRemediationVerificationRepository()
         self.registry = build_default_registry()
 
         self.orchestration = OrchestrationService(

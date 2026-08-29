@@ -9,6 +9,35 @@ class JiraConfigError(Exception):
     pass
 
 
+def is_transient_jira_error(exc: Exception) -> bool:
+    """The failure classifier the resilience layer's retry/circuit
+    breaker use around this client (see
+    app.feature_review.service.FeatureReviewService.approve and
+    docs/architecture/resilience.md "Jira"). A 5xx response or a network-
+    level failure (connection refused, timeout) is transient — Jira's own
+    infrastructure is temporarily unavailable, safe to retry. A 4xx
+    response (bad auth, invalid project key, malformed request) is
+    permanent — retrying an identical request would just fail identically
+    every time, so it must never be retried and must never count toward
+    tripping the circuit breaker.
+
+    Also unwraps app.core.resilience.retry.RetryExhaustedError (raised
+    once retry_async's own attempts are used up) to classify by the
+    *original* underlying error — so the circuit breaker, which observes
+    one outcome per retry_async() call rather than per individual HTTP
+    attempt, still counts "Jira was down for a whole retry sequence" as
+    the transient failure it actually is."""
+    from app.core.resilience.retry import RetryExhaustedError
+
+    if isinstance(exc, RetryExhaustedError):
+        return is_transient_jira_error(exc.last_error)
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        return exc.response.status_code >= 500
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+        return True
+    return False
+
+
 class JiraClient:
     def __init__(self):
         settings = get_settings()

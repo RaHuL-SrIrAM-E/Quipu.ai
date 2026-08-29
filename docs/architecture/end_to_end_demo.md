@@ -22,7 +22,10 @@ Incident → Remediation — through the **real, unmodified** domain models,
 agent-runtime, and orchestration logic, with fakes only at the external
 system boundary (Gemini, Jira, Cloud Monitoring/Logging/Run). It is a
 demonstration and regression harness, not a new execution path: nothing
-under `app/demo/` is imported by any production module.
+under `app/demo/` is imported by any production module, other than the
+single, explicitly opt-in demo-seeding route described in "Seeding a live
+API" below — which exists purely to reuse this harness's logic, not to
+duplicate it.
 
 ```
 FeatureReviewService  ≠  OrchestrationService  ≠  the agents
@@ -229,6 +232,45 @@ explicit scope.
   `DemoSummary` field and every `StepEvidence.detail` comes from
   `app/demo/verify.py` re-reading a repository, never from an assumed
   in-memory state.
+
+## Seeding a live API
+
+`python -m app.demo.run` proves the flows work; it does not make their
+data visible through the Control Plane API or UI, since it builds its own
+disposable `DemoHarness` with its own in-memory repositories. For a live
+demo (UI open in a browser, backend actually running), `DemoHarness`
+accepts optional dependency-injected repositories:
+
+```python
+DemoHarness(
+    signal_repo=None, detection_repo=None, resolution_repo=None,
+    review_repo=None, workflow_repo=None, artifact_repo=None,
+    execution_repo=None, decision_repo=None, verification_repo=None,
+)
+```
+
+Each still defaults to a fresh `InMemory*Repository()` exactly as before —
+every existing `DemoHarness()` call site (this module, the tests above) is
+unaffected. `app/api/routes/demo.py`'s `POST /demo/scenarios/{scenario}`
+route is the one caller that passes the **live `ApiContainer`'s own
+repositories** in, so `run_feature_flow()`/`run_incident_flow()` write
+directly into the same store the running API's `GET` routes read from —
+seeded data appears in the UI immediately, no restart or separate seeding
+step needed.
+
+The intended demo flow is exactly the two journeys above, driven from the
+UI instead of a CLI:
+
+```
+Open UI → Load Feature Scenario → see signals/detection/review/workflow → Run Workflow
+Open UI → Load Incident Scenario → see incident/resolution/remediation/verification
+```
+
+This route is demo infrastructure, gated off by default
+(`Settings.demo_endpoints_enabled=False`) and absent from a disabled
+deployment's route table entirely — see
+`docs/architecture/control_plane_api.md` §13 and
+`docs/architecture/control_plane_ui.md` §8 for the API/UI sides of this.
 
 ## Tests
 

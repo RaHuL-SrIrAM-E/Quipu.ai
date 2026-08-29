@@ -59,12 +59,13 @@ app/api/
 | Group | Routes |
 |---|---|
 | Health | `GET /health`, `GET /ready` |
-| Workflows | `GET /workflows`, `GET /workflows/{id}`, `GET /workflows/{id}/artifacts`, `GET /workflows/{id}/executions`, `GET /workflows/{id}/decisions`, `POST /workflows/{id}/step` |
+| Workflows | `GET /workflows`, `GET /workflows/{id}`, `GET /workflows/{id}/artifacts`, `GET /workflows/{id}/executions`, `GET /workflows/{id}/decisions`, `POST /workflows/{id}/step`, `POST /workflows/{id}/run` |
 | Signals | `GET /signals`, `GET /signals/{id}` |
 | Detections | `GET /detections`, `GET /detections/{id}` |
 | Resolutions | `GET /resolutions`, `GET /resolutions/{id}`, `POST /resolutions/{id}/remediate` |
 | Verifications | `GET /verifications`, `GET /verifications/{id}` |
 | Feature Reviews | `GET /feature-reviews`, `GET /feature-reviews/{id}`, `POST /feature-reviews/{id}/approve`, `POST /feature-reviews/{id}/reject` |
+| Demo (disabled by default) | `POST /demo/scenarios/{scenario}` — see §13 |
 
 ## 4. Query vs. command semantics
 
@@ -80,11 +81,12 @@ method:
 | Route | Delegates to |
 |---|---|
 | `POST /workflows/{id}/step` | `OrchestrationService.execute_next_step` |
+| `POST /workflows/{id}/run` | `OrchestrationService.run_to_completion` |
 | `POST /resolutions/{id}/remediate` | `OrchestrationService.start_remediation_from_resolution` |
 | `POST /feature-reviews/{id}/approve` | `FeatureReviewService.approve` |
 | `POST /feature-reviews/{id}/reject` | `FeatureReviewService.reject` |
 
-None of these four accept a request body field that influences *what*
+None of these accept a request body field that influences *what*
 happens beyond an optional `review_comment` string — no target agent,
 strategy, stage, or workflow id override is ever accepted from the client
 (Invariants 5/6). `POST /resolutions/{id}/remediate` accepts **no request
@@ -92,6 +94,19 @@ body at all**: everything `start_remediation_from_resolution` needs, it
 already re-derives deterministically from the persisted `ResolutionResult`
 (see `app/orchestration/service.py`'s own docstring on why
 `resolution.target_agent` is never trusted there either).
+
+`POST /workflows/{id}/run` is **not** a second orchestration engine — it
+repeatedly calls the exact same `execute_next_step` mechanism the `/step`
+route uses (via the pre-existing `OrchestrationService.run_to_completion`),
+bounded by `Settings.workflow_run_max_iterations` (default 20), until the
+workflow reaches a terminal status, becomes blocked waiting on a human, or
+the iteration cap is hit. It is safe to call repeatedly: a workflow already
+in a terminal state is returned unchanged by `execute_next_step` itself, so
+re-invoking `/run` never duplicates completed work. The response
+(`WorkflowRunResult`) is a summary derived entirely from durable state
+(new artifact ids, decision count delta, `retry_count:*` metadata) —
+never raw LLM output. See `docs/architecture/resilience.md` for how this
+interacts with the orchestration retry budget.
 
 ## 5. Authorization boundary
 
@@ -278,3 +293,30 @@ own.
 > `app/api/app.py` (`Settings.api_serve_ui`, default `False`) for serving
 > the built UI from the same Cloud Run service; every route/schema/service
 > documented above is unchanged.
+
+## 13. Demo scenario seeding (disabled by default)
+
+`POST /demo/scenarios/{scenario}` is demo-only infrastructure, not part of
+the production control surface described above. It does not weaken §12:
+`scenario` is a `str` `Enum` with exactly two members (`feature`,
+`incident`) — there is no way to pass an arbitrary scenario, workflow, or
+ticket through this route. The handler does not invoke agents directly or
+run shell commands; it constructs a `DemoHarness` (the same harness already
+used by tests) with the live `ApiContainer`'s own repositories injected, so
+seeded data becomes visible through the ordinary query endpoints above
+(`GET /workflows`, `GET /signals`, etc.) exactly as if it had been produced
+by a real signal.
+
+The route is **absent from the running app entirely** unless
+`Settings.demo_endpoints_enabled=True` — `app/api/app.py` only imports and
+registers `app/api/routes/demo.py`'s router inside that conditional, so a
+disabled deployment returns a genuine 404 rather than reaching a
+disabled-check a request could ever exploit. The flag defaults to `False`
+and is expected to stay `False` in any real deployment; see
+`docs/architecture/end_to_end_demo.md` "Seeding a live API" for the
+intended usage.
+
+Repeat calls for the same scenario are idempotent: the container caches
+the seeded result (`ApiContainer.demo_scenario_results`) and returns it
+unchanged (`already_seeded=True`) instead of re-running the harness and
+duplicating data.

@@ -28,12 +28,16 @@ already uses for deterministic Jira story creation — no second Jira
 integration. See docs/architecture/feature_review.md for the full design.
 """
 
+import asyncio
 from datetime import datetime, timezone
 
 from app.agent_runtime.capabilities import AgentCapability, check_capability
 from app.agent_runtime.gateways.detections import DetectionGateway
 from app.agent_runtime.gateways.signals import SignalGateway
-from app.core.jira_client import JiraClient
+from app.config import get_settings
+from app.core.jira_client import JiraClient, is_transient_jira_error
+from app.core.resilience.circuit_breaker import CircuitBreaker
+from app.core.resilience.retry import RetryPolicy, retry_async
 from app.domain import DecisionSource, DetectionResult, DetectionType, FeatureReview, ReviewStatus, Ticket
 from app.persistence.errors import VersionConflictError
 from app.persistence.repositories.feature_review import FeatureReviewQuery, FeatureReviewRepository
@@ -150,11 +154,48 @@ class FeatureReviewService:
         self._detections = detection_gateway
         self._signals = signal_gateway
         self._jira_client = jira_client
+        # Process-local resilience around the one real external call this
+        # service makes — see docs/architecture/resilience.md "Jira".
+        # Instance-scoped (not module-level) so each FeatureReviewService
+        # (one per running process/API container — see
+        # app/api/container.py) has its own independent breaker state;
+        # this is NOT shared across Cloud Run instances (see that doc's
+        # "Cloud Run multi-instance limitation").
+        self._jira_breaker = CircuitBreaker(
+            "jira",
+            failure_threshold=get_settings().jira_circuit_breaker_failure_threshold,
+            recovery_timeout_seconds=get_settings().jira_circuit_breaker_recovery_timeout_seconds,
+            is_countable_failure=is_transient_jira_error,
+        )
 
     def _get_jira_client(self) -> JiraClient:
         if self._jira_client is None:
             self._jira_client = JiraClient()
         return self._jira_client
+
+    async def _create_jira_story_resilient(self, *, summary: str, description: str) -> dict:
+        """Bounded retry (transient network/5xx failures only) inside a
+        circuit breaker (fails fast once Jira looks consistently down,
+        rather than making every concurrent approve() wait through a full
+        retry sequence). The synchronous `requests` call runs in a thread
+        so it never blocks the event loop. A permanent failure (bad auth,
+        4xx) propagates on the first attempt, uncounted by the breaker —
+        see app.core.jira_client.is_transient_jira_error."""
+        settings = get_settings()
+        policy = RetryPolicy(
+            max_attempts=settings.jira_retry_max_attempts,
+            base_delay_seconds=settings.jira_retry_base_delay_seconds,
+            retryable=is_transient_jira_error,
+        )
+
+        async def _call_once() -> dict:
+            client = self._get_jira_client()
+            return await asyncio.to_thread(client.create_story, summary=summary, description=description)
+
+        async def _call_with_retry() -> dict:
+            return await retry_async(_call_once, policy, operation="jira_create_story")
+
+        return await self._jira_breaker.call(_call_with_retry)
 
     # ---- creation --------------------------------------------------------
 
@@ -249,7 +290,7 @@ class FeatureReviewService:
         if ticket is None:
             ticket = _build_ticket(detection, review, reviewer_id=reviewer_id, review_comment=review_comment)
             try:
-                jira_result = self._get_jira_client().create_story(summary=ticket.title, description=ticket.description)
+                jira_result = await self._create_jira_story_resilient(summary=ticket.title, description=ticket.description)
             except Exception as exc:
                 # Review stays PENDING — no Firestore write has happened yet
                 # at this point, so a retry is fully safe.

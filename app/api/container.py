@@ -13,7 +13,7 @@ service objects, backed by the real Firestore repositories, used when
 only decision this module makes.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.agent_runtime.gateways.knowledge import KnowledgeServiceGateway
 from app.config import get_settings
@@ -59,6 +59,13 @@ class ApiContainer:
     review_repo: FeatureReviewRepository
     orchestration: OrchestrationService
     review_service: FeatureReviewService
+    # Demo-scenario-seeding idempotency cache (app/api/routes/demo.py,
+    # opt-in via Settings.demo_endpoints_enabled) — keyed by scenario
+    # name ("feature"/"incident"), value is a plain dict of the ids the
+    # route already returned once. Deliberately a plain dict, not a
+    # pydantic schema instance, so app/api/container.py (infrastructure
+    # wiring) never needs to import the route-response schema layer.
+    demo_scenario_results: dict = field(default_factory=dict)
 
 
 def _build_orchestration(

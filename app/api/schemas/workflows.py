@@ -10,6 +10,25 @@ from pydantic import BaseModel
 from app.domain import AgentExecution, Artifact, Decision, WorkflowStage, WorkflowState, WorkflowStatus
 
 
+class WorkflowRunResult(BaseModel):
+    """The response for POST /workflows/{id}/run — see
+    app/api/routes/workflows.py. Deliberately carries no raw LLM output;
+    every field here is derived from durable state (WorkflowState,
+    Artifact, Decision records) already produced by the existing
+    OrchestrationService.run_to_completion()."""
+
+    workflow_id: str
+    initial_stage: WorkflowStage
+    final_stage: WorkflowStage
+    final_status: WorkflowStatus
+    stages_executed: list[str]
+    artifacts_created: int
+    decisions_created: int
+    retries_used: int
+    duration_ms: float
+    human_action_required: bool
+
+
 class WorkflowSummary(BaseModel):
     workflow_id: str
     ticket_title: str

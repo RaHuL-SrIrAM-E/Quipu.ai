@@ -12,6 +12,7 @@ import type {
   ApiErrorResponse,
   ArtifactSummary,
   DecisionSummary,
+  DemoScenarioResult,
   DetectionSummary,
   ExecutionSummary,
   FeatureReviewSummary,
@@ -20,6 +21,7 @@ import type {
   SignalSummary,
   VerificationSummary,
   WorkflowDetail,
+  WorkflowRunResult,
   WorkflowSummary,
 } from "./types";
 
@@ -113,6 +115,15 @@ export const api = {
   listWorkflowDecisions: (workflowId: string) => request<DecisionSummary[]>(`/workflows/${workflowId}/decisions`),
   stepWorkflow: (workflowId: string) =>
     request<WorkflowDetail>(`/workflows/${workflowId}/step`, { method: "POST", headers: commandHeaders() }),
+  runWorkflow: (workflowId: string) =>
+    request<WorkflowRunResult>(`/workflows/${workflowId}/run`, { method: "POST", headers: commandHeaders() }),
+
+  // Demo scenario seeding — only reachable when the backend has
+  // Settings.demo_endpoints_enabled=true; otherwise the API 404s (see
+  // app/api/routes/demo.py). Never available "accidentally" — the UI
+  // just surfaces whatever the backend allows.
+  runDemoScenario: (scenario: "feature" | "incident") =>
+    request<DemoScenarioResult>(`/demo/scenarios/${scenario}`, { method: "POST" }),
 
   listSignals: (
     params: {

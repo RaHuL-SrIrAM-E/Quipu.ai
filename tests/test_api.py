@@ -668,3 +668,109 @@ def test_api_serve_ui_when_explicitly_enabled(container, monkeypatch):
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+# ---------------------------------------------------------------------------
+# POST /workflows/{id}/run — run-to-completion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_executes_to_completion(client, container):
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from app.demo.fakes import VALID_ARCHITECTURE, VALID_CODEGEN, VALID_DEPLOYMENT, VALID_PLAN, VALID_TESTING_PASS
+    from app.demo.patching import demo_agent_runner_patches
+
+    workspace = tempfile.mkdtemp()
+    (Path(workspace) / "requirements.txt").write_text("pytest\n")
+    (Path(workspace) / "test_export.py").write_text("def test_export():\n    assert True\n")
+
+    workflow = await container.orchestration.start_workflow(Ticket(title="run test", description="run test"), workspace_path=workspace)
+
+    with demo_agent_runner_patches(
+        plan_text=json.dumps(VALID_PLAN),
+        architecture_text=json.dumps(VALID_ARCHITECTURE),
+        codegen_text=json.dumps(VALID_CODEGEN),
+        testing_text=json.dumps(VALID_TESTING_PASS),
+        deployment_text=json.dumps(VALID_DEPLOYMENT),
+        deployment_succeeds=True,
+    ):
+        r = client.post(f"/workflows/{workflow.workflow_id}/run")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["workflow_id"] == workflow.workflow_id
+    assert body["initial_stage"] == "planning"
+    assert body["final_stage"] == "completed"
+    assert body["final_status"] == "completed"
+    assert body["stages_executed"] == ["plan", "architecture", "code_change", "test_result", "deployment"]
+    assert body["artifacts_created"] == 5
+    assert body["human_action_required"] is False
+    assert body["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_is_safe_to_call_repeatedly(client, container):
+    workflow = await container.orchestration.start_workflow(Ticket(title="t", description="d"))
+
+    async def _fake_run_to_completion(workflow_id, *, max_steps):
+        current = await container.workflow_repo.get(workflow_id)
+        return await container.workflow_repo.update_if_version(workflow_id, current.version, current.model_copy(update={"status": WorkflowStatus.COMPLETED}))
+
+    original = container.orchestration.run_to_completion
+    container.orchestration.run_to_completion = _fake_run_to_completion
+    try:
+        first = client.post(f"/workflows/{workflow.workflow_id}/run").json()
+        second = client.post(f"/workflows/{workflow.workflow_id}/run").json()
+    finally:
+        container.orchestration.run_to_completion = original
+
+    assert first["final_status"] == "completed"
+    assert second["final_status"] == "completed"
+    assert second["artifacts_created"] == 0  # nothing new was produced the second time
+    assert second["stages_executed"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_delegates_to_run_to_completion_with_bounded_iterations(client, container, monkeypatch):
+    calls = []
+
+    async def _fake_run_to_completion(workflow_id, *, max_steps):
+        calls.append((workflow_id, max_steps))
+        return await container.workflow_repo.get(workflow_id)
+
+    from app.config import Settings
+
+    monkeypatch.setattr(container.orchestration, "run_to_completion", _fake_run_to_completion)
+    monkeypatch.setattr("app.api.routes.workflows.get_settings", lambda: Settings(workflow_run_max_iterations=7))
+
+    workflow = await container.orchestration.start_workflow(Ticket(title="t", description="d"))
+    r = client.post(f"/workflows/{workflow.workflow_id}/run")
+
+    assert r.status_code == 200
+    assert calls == [(workflow.workflow_id, 7)]
+
+
+def test_run_workflow_route_never_invokes_an_agent_directly():
+    """Structural guard: the route module must not import any QuipuAgent
+    class — every execution must go through OrchestrationService."""
+    import ast
+    import pathlib
+
+    source = pathlib.Path("app/api/routes/workflows.py").read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = getattr(node, "module", None) or ""
+            names = [alias.name for alias in node.names]
+            assert "app.agents" not in module, f"workflows route must not import an agent module: {module}"
+            assert not any(n.endswith("Agent") for n in names), f"workflows route must not import an agent class: {names}"
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_not_found(client):
+    r = client.post("/workflows/does-not-exist/run")
+    assert r.status_code == 404

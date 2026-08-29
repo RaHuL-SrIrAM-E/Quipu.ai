@@ -38,6 +38,7 @@ from app.core.db_hooks import stage_completed, stage_started
 from app.core.jira_client import JiraClient
 from app.core.metrics import RunMetrics
 from app.core.observability import get_logger
+from app.core.resilience.timeout import with_timeout
 from app.core.rbac import STAGE_ROLES, Permission
 from app.domain import (
     AgentError,
@@ -423,9 +424,13 @@ class PlanningAgent(QuipuAgent):
 
         final_text = ""
         try:
-            async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
-                if event.is_final_response() and event.content and event.content.parts:
-                    final_text = event.content.parts[0].text
+            async def _consume_llm_response() -> None:
+                nonlocal final_text
+                async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
+                    if event.is_final_response() and event.content and event.content.parts:
+                        final_text = event.content.parts[0].text
+
+            await with_timeout(_consume_llm_response(), settings.llm_call_timeout_seconds, operation="planning_agent_llm_call")
         except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a plan.
             logger.exception("planning agent LLM execution failed")
             return await _fail("PLANNING_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)

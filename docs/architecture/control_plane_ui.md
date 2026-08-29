@@ -50,9 +50,9 @@ task required is documented in §11.
 
 | Route | Page | Purpose |
 |---|---|---|
-| `/` | Overview | Command center — live workflow timeline + recent signals/detections/reviews/incidents/verifications |
+| `/` | Overview | Command center — live workflow timeline + recent signals/detections/reviews/incidents/verifications; demo-only "Load Feature Scenario"/"Load Incident Scenario" |
 | `/workflows` | Workflows | All workflows, linking into detail |
-| `/workflows/:workflowId` | Workflow Detail | Stage progress, artifact lineage, executions, decisions, "Run Next Step" |
+| `/workflows/:workflowId` | Workflow Detail | Stage progress, artifact lineage, executions, decisions, "Run Next Step" and "Run Workflow" |
 | `/signals` | Signal Explorer | Filterable list + safe provenance detail pane |
 | `/detections` | Detection Center | Product-opportunity vs. incident, filterable by domain |
 | `/feature-reviews` | Feature Review Queue | AI detected → human reviews → approve/reject |
@@ -64,9 +64,9 @@ task required is documented in §11.
 
 | Page | Endpoints used |
 |---|---|
-| Overview | `GET /workflows`, `/signals`, `/detections`, `/feature-reviews`, `/resolutions`, `/verifications` (all bounded) |
+| Overview | `GET /workflows`, `/signals`, `/detections`, `/feature-reviews`, `/resolutions`, `/verifications` (all bounded); `POST /demo/scenarios/{scenario}` (demo-only, see §8) |
 | Workflows | `GET /workflows` |
-| Workflow Detail | `GET /workflows/{id}`, `/artifacts`, `/executions`, `/decisions`; `POST /workflows/{id}/step` |
+| Workflow Detail | `GET /workflows/{id}`, `/artifacts`, `/executions`, `/decisions`; `POST /workflows/{id}/step`, `POST /workflows/{id}/run` |
 | Signal Explorer | `GET /signals` (filtered), `GET /signals/{id}` |
 | Detection Center | `GET /detections` (filtered by domain) |
 | Feature Review Queue | `GET /feature-reviews`, `GET /detections/{id}`; `POST /feature-reviews/{id}/approve`\|`reject` |
@@ -154,6 +154,30 @@ are sufficient to drive the same story `DemoHarness.run_feature_flow()`/
 can seed a container with that harness's data (or its own) and walk the
 UI through Overview → Feature Review → Workflow Detail → Incident Console
 → Verification without any UI-specific fixture.
+
+Overview now also renders two `CommandButton`s — "Load Feature Scenario"
+and "Load Incident Scenario" — that call `api.runDemoScenario("feature" |
+"incident")`, i.e. `POST /demo/scenarios/{scenario}`
+(`docs/architecture/control_plane_api.md` §13). This replaces the need to
+seed a container out-of-band before a demo: with
+`Settings.demo_endpoints_enabled=True` on the backend, a presenter can
+click one button in the running UI and immediately see the seeded
+signals/detection/review/workflow (feature) or
+incident/resolution/remediation/verification (incident) appear through
+the same polling the rest of Overview already does. When the flag is
+`False` (the default, and expected in any real deployment), the route
+404s and the button surfaces that as an ordinary command error — the UI
+does not hide or special-case the disabled state, it just reflects
+whatever the backend allows, per the "UI never decides orchestration or
+security policy" rule in §6.
+
+Workflow Detail's "Run Workflow" button
+(`api.runWorkflow` → `POST /workflows/{id}/run`) drives the same demo
+story to completion in one click instead of one step at a time. "Run Next
+Step" is deliberately kept alongside it, not replaced — stepping through
+one stage at a time is what makes the autonomous orchestration visible
+during a demo; "Run Workflow" is for skipping ahead once that point has
+been made once.
 
 ## 9. Local development
 

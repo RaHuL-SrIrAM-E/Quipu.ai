@@ -5,6 +5,7 @@ import { PageHeader, Panel } from "../components/Layout";
 import { DataView } from "../components/States";
 import { StatusBadge, DomainBadge } from "../components/StatusBadge";
 import { StageTimeline } from "../components/StageTimeline";
+import { CommandButton } from "../components/CommandButton";
 import { formatRelativeTime } from "../lib/format";
 
 const POLL_MS = 12_000;
@@ -25,6 +26,37 @@ export function Overview() {
       <PageHeader
         title="Command Center"
         description="Quipu detects what needs to change, decides what should happen next, executes the engineering workflow, monitors production, and verifies whether the change actually solved the problem."
+        actions={
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <CommandButton
+              label="Load Feature Scenario"
+              confirmLabel="Load scenario"
+              tone="ghost"
+              description="Seeds the built-in feature-opportunity demo scenario (product signals → detection → feature review → engineering workflow) into this running backend via POST /demo/scenarios/feature. Only available when the backend has demo endpoints enabled."
+              onRun={() => api.runDemoScenario("feature")}
+              onSuccess={() => {
+                workflows.refresh();
+                signals.refresh();
+                detections.refresh();
+                reviews.refresh();
+              }}
+            />
+            <CommandButton
+              label="Load Incident Scenario"
+              confirmLabel="Load scenario"
+              tone="ghost"
+              description="Seeds the built-in incident demo scenario (operational signals → detection → resolution → remediation → verification) into this running backend via POST /demo/scenarios/incident. Only available when the backend has demo endpoints enabled."
+              onRun={() => api.runDemoScenario("incident")}
+              onSuccess={() => {
+                workflows.refresh();
+                signals.refresh();
+                detections.refresh();
+                resolutions.refresh();
+                verifications.refresh();
+              }}
+            />
+          </div>
+        }
       />
 
       <Panel title="Live Workflow Timeline">
