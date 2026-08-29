@@ -11,6 +11,7 @@ suite. Publishes one message and consumes+acks it — safe to run repeatedly
 against a scratch topic/subscription.
 """
 
+import asyncio
 import json
 import os
 import uuid
@@ -109,3 +110,49 @@ async def test_real_pubsub_ingestion_service_end_to_end():
     saved = await repo.get(created_signal_id)
     assert saved is not None
     assert saved.provenance.source_event_id == marker
+
+
+@pytest.mark.asyncio
+async def test_real_pubsub_signal_consumer_worker_end_to_end():
+    """The production SignalConsumerWorker (app.eventing.worker), run
+    against a real Pub/Sub subscription for a short bounded window — the
+    same worker app.eventing.worker_main wires into a long-running
+    process, here run just long enough to observe one published message."""
+    from app.eventing.google_pubsub_client import GooglePubSubClient
+    from app.eventing.ingestion_service import SignalIngestionService
+    from app.eventing.worker import SignalConsumerWorker
+    from app.persistence.memory.repositories import InMemorySignalRepository
+    from app.persistence.repositories.signal import SignalQuery
+
+    topic = os.environ.get("PUBSUB_INTEGRATION_TEST_TOPIC")
+    subscription = os.environ.get("PUBSUB_INTEGRATION_TEST_SUBSCRIPTION")
+    assert topic, "set PUBSUB_INTEGRATION_TEST_TOPIC to a real Pub/Sub topic name"
+    assert subscription, "set PUBSUB_INTEGRATION_TEST_SUBSCRIPTION to a real subscription bound to that topic"
+
+    client = GooglePubSubClient()
+    repo = InMemorySignalRepository()
+    service = SignalIngestionService(repo)
+
+    marker = str(uuid.uuid4())
+    envelope = {
+        "event_id": marker,
+        "source": "customer_feedback",
+        "event_type": "feedback",
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "subject": "integration-test",
+        "payload": {"feedback_id": marker, "submitted_at": datetime.now(timezone.utc).isoformat(), "text": "worker integration test message"},
+        "metadata": {},
+    }
+    await client.publish(topic=topic, data=json.dumps(envelope).encode("utf-8"))
+
+    worker = SignalConsumerWorker(client, service, subscription=subscription, poll_interval_seconds=1.0)
+    await worker.start()
+    for _ in range(20):
+        signals = await repo.query(SignalQuery(limit=50))
+        if any(s.provenance.source_event_id == marker for s in signals):
+            break
+        await asyncio.sleep(1.0)
+    await worker.stop()
+
+    signals = await repo.query(SignalQuery(limit=50))
+    assert any(s.provenance.source_event_id == marker for s in signals), "the worker did not observe the published message within the poll budget"

@@ -116,6 +116,22 @@ class Settings(BaseSettings):
     pubsub_pull_max_messages: int = 20
     pubsub_api_timeout_seconds: float = 30.0
 
+    # Pub/Sub Signal Consumer Worker — used only by
+    # app/eventing/worker.py, the long-running process boundary around
+    # SignalIngestionService (see docs/architecture/pubsub_worker.md).
+    # pubsub_worker_max_concurrency bounds how many messages are
+    # in-flight (parsed/normalized/persisted) at once, independent of
+    # pubsub_pull_max_messages (how many are fetched in one pull() call —
+    # a pull can return more than max_concurrency; the extra simply wait
+    # for a concurrency slot). pubsub_worker_poll_interval_seconds is how
+    # long the worker sleeps after an empty pull before trying again
+    # (interruptible by stop()). pubsub_worker_shutdown_timeout_seconds
+    # bounds how long stop() waits for in-flight messages to finish
+    # before cancelling them.
+    pubsub_worker_max_concurrency: int = 10
+    pubsub_worker_poll_interval_seconds: float = 5.0
+    pubsub_worker_shutdown_timeout_seconds: float = 30.0
+
     # Detection Processor — used only by app/detection/ (the event-driven
     # DetectionTrigger -> DetectingAgent boundary). Reuses
     # detecting_max_signals/detecting_max_window_minutes (DetectingAgent's

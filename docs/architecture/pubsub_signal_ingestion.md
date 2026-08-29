@@ -336,14 +336,21 @@ the seam future work attaches to.
 | Cloud Logging | Production logs | Implemented (Level 3.1; now also reachable via Pub/Sub ingestion — see §2) |
 | **Pub/Sub** | **Event transport for Signal ingestion** | **Implemented this level** — real `PublisherClient`/`SubscriberClient` calls behind `app/eventing/google_pubsub_client.py` |
 
+> **Update**: implemented in a later task — see
+> `docs/architecture/pubsub_worker.md`. `SignalConsumerWorker`
+> (`app/eventing/worker.py`) is the caller that runs `SignalIngestionService`
+> continuously against a live subscription, with bounded concurrency and
+> graceful shutdown; `app/eventing/worker_main.py` is the process
+> entrypoint. `DetectionTrigger` is also no longer a no-op in production
+> wiring — see `docs/architecture/event_driven_detection.md`.
+
 ## 16. Limitations / deferred work
 
 - The real Pub/Sub client uses synchronous pull, not streaming-pull — fine
   for this task's bounded polling scope, but a high-throughput production
-  deployment may eventually want a streaming-pull worker.
-- No HTTP API or scheduler drives the pull loop yet; running
-  `SignalIngestionService` against a live subscription requires a caller
-  (e.g. a small worker script) not built in this task.
+  deployment may eventually want a streaming-pull worker (see
+  `docs/architecture/pubsub_worker.md` §12/§13 for how that would plug in
+  without changing `SignalIngestionService`).
 - `DetectionTrigger` is a no-op by design (§14) — no event-driven detection
   actually happens yet.
 - Product-signal producers (customer feedback, support, user behavior)

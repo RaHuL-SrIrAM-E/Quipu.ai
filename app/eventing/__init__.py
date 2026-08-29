@@ -21,6 +21,7 @@ from app.eventing.errors import IngestionError, IngestionFailureCategory
 from app.eventing.ingestion_service import IngestOutcome, SignalIngestionService
 from app.eventing.protocols import PubSubConsumer, PubSubMessage, PubSubPublisher
 from app.eventing.trigger import DetectionTrigger, NoOpDetectionTrigger, SignalAvailableEvent
+from app.eventing.worker import SignalConsumerWorker, WorkerCounters
 
 __all__ = [
     "DetectionTrigger",
@@ -34,5 +35,7 @@ __all__ = [
     "PubSubMessage",
     "PubSubPublisher",
     "SignalAvailableEvent",
+    "SignalConsumerWorker",
     "SignalIngestionService",
+    "WorkerCounters",
 ]
