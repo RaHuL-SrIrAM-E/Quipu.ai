@@ -48,6 +48,33 @@ class AgentCapability(StrEnum):
     READ_SIGNALS = "read_signals"
     WRITE_DETECTION = "write_detection"
 
+    # Level 3.3 (IncidentResolutionAgent): reading a persisted DetectionResult
+    # through DetectionGateway is a distinct concern from WRITE_DETECTION
+    # (which gates Detecting's own persistence of its interpretation) — a
+    # read-only counterpart, same split as READ_ARTIFACT/WRITE_ARTIFACT.
+    # WRITE_RESOLUTION mirrors WRITE_DETECTION's role: permission to persist
+    # this agent's OWN structured output (ResolutionResult) through
+    # ResolutionGateway — not a real-world mutation capability. Note this is
+    # deliberately NOT the same as RESOLVE_INCIDENT (above, pre-existing):
+    # RESOLVE_INCIDENT is reserved for whatever future component actually
+    # closes out/executes remediation for an incident; IncidentResolutionAgent
+    # only ever proposes a plan, so it must never hold RESOLVE_INCIDENT — see
+    # docs/architecture/incident_resolution_agent.md.
+    READ_DETECTION = "read_detection"
+    WRITE_RESOLUTION = "write_resolution"
+
+    # Level 3.4 (Feature Review — a deterministic service, NOT an agent; see
+    # app/feature_review/service.py): permission to approve/reject a
+    # FEATURE_OPPORTUNITY DetectionResult. Deliberately independent of
+    # WRITE_CODE/DEPLOY/RESOLVE_INCIDENT — reviewing a product opportunity
+    # has nothing to do with those. This capability alone is NOT sufficient
+    # authorization to approve/reject: the caller's DecisionSource must also
+    # be HUMAN (see FeatureReview.reviewer_type) — an agent holding this
+    # capability could still never satisfy that second, independent check,
+    # which is what actually prevents Detecting (or any agent) from
+    # approving its own feature opportunity.
+    REVIEW_FEATURE_OPPORTUNITY = "review_feature_opportunity"
+
 
 class CapabilityError(RuntimeError):
     """Raised when an agent attempts to act outside its granted capabilities."""

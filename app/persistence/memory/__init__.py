@@ -3,7 +3,9 @@ from app.persistence.memory.repositories import (
     InMemoryArtifactRepository,
     InMemoryDecisionRepository,
     InMemoryDetectionRepository,
+    InMemoryFeatureReviewRepository,
     InMemoryIncidentRepository,
+    InMemoryResolutionRepository,
     InMemorySignalRepository,
     InMemoryWorkflowRepository,
 )
@@ -13,7 +15,9 @@ __all__ = [
     "InMemoryArtifactRepository",
     "InMemoryDecisionRepository",
     "InMemoryDetectionRepository",
+    "InMemoryFeatureReviewRepository",
     "InMemoryIncidentRepository",
+    "InMemoryResolutionRepository",
     "InMemorySignalRepository",
     "InMemoryWorkflowRepository",
 ]

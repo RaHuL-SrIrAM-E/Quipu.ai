@@ -185,3 +185,49 @@ class SignalStatus(StrEnum):
     OBSERVED = "observed"
     INGESTED = "ingested"
     AVAILABLE = "available"
+
+
+class RemediationStrategy(StrEnum):
+    """What Incident Resolution recommends — a closed set that maps 1:1
+    onto an existing, already-implemented Quipu agent (or explicit human
+    escalation), never an open string the model could use to invent a
+    target. See app.agents.incident_resolution._STRATEGY_TARGET_AGENT for
+    the deterministic strategy -> agent mapping. Deliberately excludes a
+    CONFIGURATION_CHANGE value: no safe, existing execution path for
+    mutating configuration exists anywhere in Quipu today, so that outcome
+    is represented as ESCALATE instead of inventing a new mutation
+    capability just for this level."""
+
+    CODE_FIX = "code_fix"  # -> codegen_agent
+    RETEST = "retest"  # -> testing_agent (confirm via re-execution, or the test itself needs attention)
+    ARCHITECTURE_REVIEW = "architecture_review"  # -> architecture_agent
+    ROLLBACK = "rollback"  # -> deployment_agent (recommendation only — never executed here)
+    ESCALATE = "escalate"  # -> human / future incident workflow
+    NO_ACTION = "no_action"  # evidence doesn't support any remediation
+
+
+class RemediationRisk(StrEnum):
+    """How risky the RECOMMENDED remediation itself is — independent of
+    incident severity and independent of root_cause_confidence (see
+    docs/architecture/incident_resolution_agent.md §10/§21). No existing
+    risk-level model was found to reuse (app.agents.planning.Risk is a
+    {description, mitigation} pair, not a level) — this is a genuinely new,
+    narrow enum."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ReviewStatus(StrEnum):
+    """The Feature Review state machine (Level 3.4) — deliberately just
+    three states, two of them terminal. PENDING -> APPROVED and
+    PENDING -> REJECTED are the only allowed transitions; there is no
+    REJECTED -> APPROVED or APPROVED -> REJECTED reopening in this level
+    (see docs/architecture/feature_review.md "Review state machine"). This
+    is a human governance decision, never something Detecting or any other
+    agent can set — see app.feature_review.service."""
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"

@@ -23,7 +23,10 @@ from app.domain.enums import (
     DetectionType,
     ErrorCategory,
     KnowledgeType,
+    RemediationRisk,
+    RemediationStrategy,
     RetrievalStrategy,
+    ReviewStatus,
     SignalSeverity,
     SignalSource,
     SignalStatus,
@@ -31,7 +34,9 @@ from app.domain.enums import (
     WorkflowStage,
     WorkflowStatus,
 )
+from app.domain.feature_review import FeatureReview
 from app.domain.knowledge import KnowledgeItem, KnowledgeQuery, KnowledgeRequest
+from app.domain.resolution import ResolutionResult, compute_resolution_fingerprint
 from app.domain.signal import Signal, SignalProvenance, compute_fingerprint
 from app.domain.ticket import Ticket
 from app.domain.tool import ToolExecution, ToolRequest
@@ -52,11 +57,16 @@ __all__ = [
     "DetectionResult",
     "DetectionType",
     "ErrorCategory",
+    "FeatureReview",
     "KnowledgeItem",
     "KnowledgeQuery",
     "KnowledgeRequest",
     "KnowledgeType",
+    "RemediationRisk",
+    "RemediationStrategy",
+    "ResolutionResult",
     "RetrievalStrategy",
+    "ReviewStatus",
     "Signal",
     "SignalProvenance",
     "SignalSeverity",
@@ -71,4 +81,5 @@ __all__ = [
     "WorkflowStatus",
     "compute_detection_fingerprint",
     "compute_fingerprint",
+    "compute_resolution_fingerprint",
 ]

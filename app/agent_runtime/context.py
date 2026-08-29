@@ -12,6 +12,7 @@ from typing import Any
 from app.agent_runtime.gateways.artifacts import ArtifactGateway
 from app.agent_runtime.gateways.detections import DetectionGateway
 from app.agent_runtime.gateways.knowledge import KnowledgeGateway
+from app.agent_runtime.gateways.resolutions import ResolutionGateway
 from app.agent_runtime.gateways.signals import SignalGateway
 from app.agent_runtime.gateways.tools import ToolGateway
 from app.core.observability import get_logger
@@ -46,3 +47,8 @@ class AgentContext:
     # agent persist DetectionResults through DetectionRepository. Only
     # DetectingAgent uses this today.
     detections: DetectionGateway | None = None
+
+    # Optional (Level 3.3 bridge, same shape as `detections` above): lets an
+    # agent persist ResolutionResults through ResolutionRepository. Only
+    # IncidentResolutionAgent uses this today.
+    resolutions: ResolutionGateway | None = None

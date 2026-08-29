@@ -88,6 +88,18 @@ class Settings(BaseSettings):
     detecting_max_window_minutes: int = 43200  # 30 days
     detecting_max_signals: int = 50
 
+    # Incident Resolution Agent — used only by app/agents/incident_resolution.py.
+    # incident_resolution_max_evidence bounds how many of a DetectionResult's
+    # supporting_signal_ids are ever resolved/sent to Gemini (defense in
+    # depth — Detecting already bounds this via detecting_max_signals, but
+    # Resolution doesn't trust that ceiling blindly). The confidence
+    # threshold is the deterministic auto-remediation gate documented in
+    # docs/architecture/incident_resolution_agent.md §10 — below it, any
+    # non-escalation strategy is downgraded to ESCALATE regardless of what
+    # Gemini proposed.
+    incident_resolution_max_evidence: int = 50
+    incident_resolution_min_confidence_for_auto_remediation: float = 0.7
+
     log_level: str = "INFO"
 
 

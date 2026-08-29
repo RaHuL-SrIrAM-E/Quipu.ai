@@ -132,13 +132,17 @@ class DetectionOutput(BaseModel):
     _validate_subject = field_validator("subject")(_non_empty)
 
 
-def _signal_to_evidence_dict(signal: Signal) -> dict:
+def signal_to_evidence_dict(signal: Signal) -> dict:
     """Compact, bounded per-signal representation handed to Gemini — typed
     fields plus the already-sanitized `evidence` dict (Level 3's
     sanitize_metadata already caps/redacts it at ingestion time), never the
     full Signal object (no internal `status`, no `metadata` free-form
     bucket) and never a second sanitization pass, since one already
-    happened before this Signal was ever persisted."""
+    happened before this Signal was ever persisted.
+
+    Intentionally public (no leading underscore) — Level 3.3's
+    IncidentResolutionAgent reuses this exact shaping function rather than
+    reimplementing it; see app/agents/incident_resolution.py."""
     return {
         "signal_id": signal.signal_id,
         "signal_type": signal.signal_type.value,
@@ -330,7 +334,7 @@ class DetectingAgent(QuipuAgent):
             )
 
         session_state: dict = {
-            "evidence_set": [_signal_to_evidence_dict(s) for s in evidence],
+            "evidence_set": [signal_to_evidence_dict(s) for s in evidence],
             "detection_domain": detecting_input.domain.value,
             "workflow_id": agent_input.workflow_id,
             "_agent_name": self.identity.agent_id,

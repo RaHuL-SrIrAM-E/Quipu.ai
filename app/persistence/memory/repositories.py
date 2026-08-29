@@ -5,10 +5,12 @@ semantics as FirestoreWorkflowRepository, so tests exercise real concurrency
 behaviour without needing a live Firestore connection.
 """
 
-from app.domain import AgentExecution, Artifact, Decision, DetectionResult, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, ResolutionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.repositories.detection import DetectionQuery
+from app.persistence.repositories.feature_review import FeatureReviewQuery
 from app.persistence.repositories.incident import IncidentRecord
+from app.persistence.repositories.resolution import ResolutionQuery
 from app.persistence.repositories.signal import SignalQuery
 
 
@@ -203,4 +205,88 @@ class InMemoryDetectionRepository:
                 continue
             results.append(detection.model_copy(deep=True))
         results.sort(key=lambda d: d.detected_at, reverse=True)
+        return results[: query.limit]
+
+
+class InMemoryResolutionRepository:
+    def __init__(self):
+        self._store: dict[str, ResolutionResult] = {}
+        self._by_fingerprint: dict[str, str] = {}  # fingerprint -> resolution_id
+
+    async def save(self, resolution: ResolutionResult) -> ResolutionResult:
+        self._store[resolution.resolution_id] = resolution.model_copy(deep=True)
+        self._by_fingerprint[resolution.fingerprint] = resolution.resolution_id
+        return resolution.model_copy(deep=True)
+
+    async def get(self, resolution_id: str) -> ResolutionResult | None:
+        resolution = self._store.get(resolution_id)
+        return resolution.model_copy(deep=True) if resolution else None
+
+    async def find_by_fingerprint(self, fingerprint: str) -> ResolutionResult | None:
+        resolution_id = self._by_fingerprint.get(fingerprint)
+        if resolution_id is None:
+            return None
+        return await self.get(resolution_id)
+
+    async def query(self, query: ResolutionQuery) -> list[ResolutionResult]:
+        results = []
+        for resolution in self._store.values():
+            if query.detection_id is not None and resolution.detection_id != query.detection_id:
+                continue
+            if query.remediation_strategy is not None and resolution.remediation_strategy != query.remediation_strategy:
+                continue
+            if query.risk is not None and resolution.risk != query.risk:
+                continue
+            if query.since is not None and resolution.resolved_at < query.since:
+                continue
+            if query.until is not None and resolution.resolved_at > query.until:
+                continue
+            results.append(resolution.model_copy(deep=True))
+        results.sort(key=lambda r: r.resolved_at, reverse=True)
+        return results[: query.limit]
+
+
+class InMemoryFeatureReviewRepository:
+    def __init__(self):
+        self._store: dict[str, FeatureReview] = {}
+        self._by_detection_id: dict[str, str] = {}  # detection_id -> review_id
+
+    async def create(self, review: FeatureReview) -> FeatureReview:
+        if review.review_id in self._store:
+            raise DuplicateEntityError("FeatureReview", review.review_id)
+        self._store[review.review_id] = review.model_copy(deep=True)
+        self._by_detection_id[review.detection_id] = review.review_id
+        return review.model_copy(deep=True)
+
+    async def get(self, review_id: str) -> FeatureReview | None:
+        stored = self._store.get(review_id)
+        return stored.model_copy(deep=True) if stored else None
+
+    async def find_by_detection_id(self, detection_id: str) -> FeatureReview | None:
+        review_id = self._by_detection_id.get(detection_id)
+        if review_id is None:
+            return None
+        return await self.get(review_id)
+
+    async def update_if_version(self, review_id: str, expected_version: int, updated_review: FeatureReview) -> FeatureReview:
+        current = self._store.get(review_id)
+        if current is None:
+            raise EntityNotFoundError("FeatureReview", review_id)
+        if current.version != expected_version:
+            raise VersionConflictError(review_id, expected_version, current.version)
+        new_review = updated_review.model_copy(update={"version": expected_version + 1})
+        self._store[review_id] = new_review.model_copy(deep=True)
+        return new_review.model_copy(deep=True)
+
+    async def query(self, query: FeatureReviewQuery) -> list[FeatureReview]:
+        results = []
+        for review in self._store.values():
+            if query.status is not None and review.status != query.status:
+                continue
+            if query.since is not None and review.created_at < query.since:
+                continue
+            if query.until is not None and review.created_at > query.until:
+                continue
+            results.append(review.model_copy(deep=True))
+        results.sort(key=lambda r: r.created_at, reverse=True)
         return results[: query.limit]

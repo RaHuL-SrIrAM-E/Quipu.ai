@@ -27,17 +27,21 @@ from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.domain import AgentExecution, Artifact, Decision, DetectionResult, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, ResolutionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.firestore.errors import translate_firestore_error
 from app.persistence.repositories.detection import DetectionQuery
+from app.persistence.repositories.feature_review import FeatureReviewQuery
 from app.persistence.repositories.incident import IncidentRecord
+from app.persistence.repositories.resolution import ResolutionQuery
 from app.persistence.repositories.signal import SignalQuery
 from app.persistence.serialization import from_firestore_dict, to_firestore_dict
 
 _WORKFLOWS = "workflows"
 _SIGNALS = "signals"
 _DETECTIONS = "detections"
+_RESOLUTIONS = "resolutions"
+_FEATURE_REVIEWS = "feature_reviews"
 
 
 async def _update_workflow_txn(
@@ -410,3 +414,164 @@ class FirestoreDetectionRepository:
             return results
         except google_exceptions.GoogleAPICallError as exc:
             raise translate_firestore_error(exc, "DetectionResult", "query") from exc
+
+
+class FirestoreResolutionRepository:
+    """Top-level `resolutions/{resolution_id}` collection — not workflow-scoped,
+    same rationale as FirestoreDetectionRepository/FirestoreSignalRepository."""
+
+    def __init__(self, client: "firestore.AsyncClient"):
+        self._client = client
+
+    def _collection(self):
+        return self._client.collection(_RESOLUTIONS)
+
+    async def save(self, resolution: ResolutionResult) -> ResolutionResult:
+        try:
+            await self._collection().document(resolution.resolution_id).set(to_firestore_dict(resolution))
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "ResolutionResult", resolution.resolution_id) from exc
+        return resolution
+
+    async def get(self, resolution_id: str) -> ResolutionResult | None:
+        try:
+            snapshot = await self._collection().document(resolution_id).get()
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "ResolutionResult", resolution_id) from exc
+        if not snapshot.exists:
+            return None
+        return from_firestore_dict(ResolutionResult, snapshot.to_dict())
+
+    async def find_by_fingerprint(self, fingerprint: str) -> ResolutionResult | None:
+        try:
+            query = self._collection().where(filter=FieldFilter("fingerprint", "==", fingerprint)).limit(1)
+            async for snapshot in query.stream():
+                return from_firestore_dict(ResolutionResult, snapshot.to_dict())
+            return None
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "ResolutionResult", fingerprint) from exc
+
+    async def query(self, query: ResolutionQuery) -> list[ResolutionResult]:
+        firestore_query = self._collection()
+        if query.detection_id is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("detection_id", "==", query.detection_id))
+        if query.remediation_strategy is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("remediation_strategy", "==", query.remediation_strategy.value))
+        if query.risk is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("risk", "==", query.risk.value))
+        if query.since is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("resolved_at", ">=", query.since))
+        if query.until is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("resolved_at", "<=", query.until))
+        firestore_query = firestore_query.order_by("resolved_at", direction=firestore.Query.DESCENDING).limit(query.limit)
+
+        try:
+            results = []
+            async for snapshot in firestore_query.stream():
+                results.append(from_firestore_dict(ResolutionResult, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "ResolutionResult", "query") from exc
+
+
+async def _update_feature_review_txn(
+    transaction: "firestore.AsyncTransaction",
+    doc_ref: "firestore.AsyncDocumentReference",
+    expected_version: int,
+    data: dict,
+) -> int:
+    """The version-check-and-write logic for FeatureReview — same shape as
+    _update_workflow_txn above (a standalone function, unit-testable
+    against a fake transaction without the real SDK's transactional
+    decorator machinery). Not written generically over both entities: the
+    existing WorkflowState precedent wasn't written generically either, and
+    a two-site abstraction would be premature."""
+    snapshot = None
+    async for candidate in transaction.get(doc_ref):
+        snapshot = candidate
+
+    if snapshot is None or not snapshot.exists:
+        raise EntityNotFoundError("FeatureReview", doc_ref.id)
+
+    current = snapshot.to_dict() or {}
+    actual_version = current.get("version")
+    if actual_version != expected_version:
+        raise VersionConflictError(doc_ref.id, expected_version, actual_version)
+
+    data = dict(data)
+    data["version"] = expected_version + 1
+    transaction.set(doc_ref, data)
+    return data["version"]
+
+
+class FirestoreFeatureReviewRepository:
+    """Top-level `feature_reviews/{review_id}` collection — not workflow-
+    scoped, same rationale as FirestoreDetectionRepository/
+    FirestoreResolutionRepository: a feature opportunity may exist long
+    before any SDLC workflow does."""
+
+    def __init__(self, client: "firestore.AsyncClient"):
+        self._client = client
+
+    def _doc(self, review_id: str):
+        return self._client.collection(_FEATURE_REVIEWS).document(review_id)
+
+    async def create(self, review: FeatureReview) -> FeatureReview:
+        doc_ref = self._doc(review.review_id)
+        try:
+            snapshot = await doc_ref.get()
+            if snapshot.exists:
+                raise DuplicateEntityError("FeatureReview", review.review_id)
+            await doc_ref.set(to_firestore_dict(review))
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "FeatureReview", review.review_id) from exc
+        return review
+
+    async def get(self, review_id: str) -> FeatureReview | None:
+        try:
+            snapshot = await self._doc(review_id).get()
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "FeatureReview", review_id) from exc
+        if not snapshot.exists:
+            return None
+        return from_firestore_dict(FeatureReview, snapshot.to_dict())
+
+    async def find_by_detection_id(self, detection_id: str) -> FeatureReview | None:
+        try:
+            query = self._client.collection(_FEATURE_REVIEWS).where(filter=FieldFilter("detection_id", "==", detection_id)).limit(1)
+            async for snapshot in query.stream():
+                return from_firestore_dict(FeatureReview, snapshot.to_dict())
+            return None
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "FeatureReview", detection_id) from exc
+
+    async def update_if_version(self, review_id: str, expected_version: int, updated_review: FeatureReview) -> FeatureReview:
+        doc_ref = self._doc(review_id)
+        data = to_firestore_dict(updated_review)
+        transaction = self._client.transaction()
+        wrapped = firestore.async_transactional(_update_feature_review_txn)
+        try:
+            new_version = await wrapped(transaction, doc_ref, expected_version, data)
+        except (EntityNotFoundError, VersionConflictError):
+            raise
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "FeatureReview", review_id) from exc
+        return updated_review.model_copy(update={"version": new_version})
+
+    async def query(self, query: FeatureReviewQuery) -> list[FeatureReview]:
+        firestore_query = self._client.collection(_FEATURE_REVIEWS)
+        if query.status is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("status", "==", query.status.value))
+        if query.since is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("created_at", ">=", query.since))
+        if query.until is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("created_at", "<=", query.until))
+        firestore_query = firestore_query.order_by("created_at", direction=firestore.Query.DESCENDING).limit(query.limit)
+
+        try:
+            results = []
+            async for snapshot in firestore_query.stream():
+                results.append(from_firestore_dict(FeatureReview, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "FeatureReview", "query") from exc

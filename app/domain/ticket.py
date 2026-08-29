@@ -17,6 +17,16 @@ class Ticket(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    # Level 3.4 (Feature Review): provenance back to the DetectionResult a
+    # Ticket originated from, when it was created from an approved feature
+    # opportunity rather than filed directly. Optional and additive —
+    # every existing caller that builds a Ticket without this field is
+    # unaffected. See app.feature_review.service and
+    # docs/architecture/feature_review.md "Signal provenance". Deliberately
+    # just the id, never the full DetectionResult — Ticket stays a thin
+    # request/issue record, not a copy of Detecting's evidence.
+    source_detection_id: str | None = None
+
     @field_validator("title", "description")
     @classmethod
     def _not_empty(cls, value: str) -> str:
