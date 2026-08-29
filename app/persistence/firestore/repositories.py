@@ -27,12 +27,13 @@ from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, ResolutionResult, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, RemediationVerification, ResolutionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.firestore.errors import translate_firestore_error
 from app.persistence.repositories.detection import DetectionQuery
 from app.persistence.repositories.feature_review import FeatureReviewQuery
 from app.persistence.repositories.incident import IncidentRecord
+from app.persistence.repositories.remediation_verification import RemediationVerificationQuery
 from app.persistence.repositories.resolution import ResolutionQuery
 from app.persistence.repositories.signal import SignalQuery
 from app.persistence.serialization import from_firestore_dict, to_firestore_dict
@@ -42,6 +43,7 @@ _SIGNALS = "signals"
 _DETECTIONS = "detections"
 _RESOLUTIONS = "resolutions"
 _FEATURE_REVIEWS = "feature_reviews"
+_REMEDIATION_VERIFICATIONS = "remediation_verifications"
 
 
 async def _update_workflow_txn(
@@ -575,3 +577,118 @@ class FirestoreFeatureReviewRepository:
             return results
         except google_exceptions.GoogleAPICallError as exc:
             raise translate_firestore_error(exc, "FeatureReview", "query") from exc
+
+
+async def _update_remediation_verification_txn(
+    transaction: "firestore.AsyncTransaction",
+    doc_ref: "firestore.AsyncDocumentReference",
+    expected_version: int,
+    data: dict,
+) -> int:
+    """The version-check-and-write logic for RemediationVerification — same
+    shape as _update_feature_review_txn above (a standalone function,
+    unit-testable against a fake transaction without the real SDK's
+    transactional decorator machinery)."""
+    snapshot = None
+    async for candidate in transaction.get(doc_ref):
+        snapshot = candidate
+
+    if snapshot is None or not snapshot.exists:
+        raise EntityNotFoundError("RemediationVerification", doc_ref.id)
+
+    current = snapshot.to_dict() or {}
+    actual_version = current.get("version")
+    if actual_version != expected_version:
+        raise VersionConflictError(doc_ref.id, expected_version, actual_version)
+
+    data = dict(data)
+    data["version"] = expected_version + 1
+    transaction.set(doc_ref, data)
+    return data["version"]
+
+
+class FirestoreRemediationVerificationRepository:
+    """Top-level `remediation_verifications/{verification_id}` collection —
+    not workflow-scoped, same rationale as FirestoreDetectionRepository/
+    FirestoreResolutionRepository/FirestoreFeatureReviewRepository: an
+    operational evidence-comparison record, not an SDLC stage output."""
+
+    def __init__(self, client: "firestore.AsyncClient"):
+        self._client = client
+
+    def _doc(self, verification_id: str):
+        return self._client.collection(_REMEDIATION_VERIFICATIONS).document(verification_id)
+
+    async def create(self, verification: RemediationVerification) -> RemediationVerification:
+        doc_ref = self._doc(verification.verification_id)
+        try:
+            snapshot = await doc_ref.get()
+            if snapshot.exists:
+                raise DuplicateEntityError("RemediationVerification", verification.verification_id)
+            await doc_ref.set(to_firestore_dict(verification))
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", verification.verification_id) from exc
+        return verification
+
+    async def get(self, verification_id: str) -> RemediationVerification | None:
+        try:
+            snapshot = await self._doc(verification_id).get()
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", verification_id) from exc
+        if not snapshot.exists:
+            return None
+        return from_firestore_dict(RemediationVerification, snapshot.to_dict())
+
+    async def find_by_resolution(self, resolution_id: str) -> list[RemediationVerification]:
+        try:
+            query = self._client.collection(_REMEDIATION_VERIFICATIONS).where(filter=FieldFilter("resolution_id", "==", resolution_id))
+            results = []
+            async for snapshot in query.stream():
+                results.append(from_firestore_dict(RemediationVerification, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", resolution_id) from exc
+
+    async def find_by_idempotency_key(self, idempotency_key: str) -> RemediationVerification | None:
+        try:
+            query = self._client.collection(_REMEDIATION_VERIFICATIONS).where(filter=FieldFilter("idempotency_key", "==", idempotency_key)).limit(1)
+            async for snapshot in query.stream():
+                return from_firestore_dict(RemediationVerification, snapshot.to_dict())
+            return None
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", idempotency_key) from exc
+
+    async def update_if_version(
+        self, verification_id: str, expected_version: int, updated_verification: RemediationVerification
+    ) -> RemediationVerification:
+        doc_ref = self._doc(verification_id)
+        data = to_firestore_dict(updated_verification)
+        transaction = self._client.transaction()
+        wrapped = firestore.async_transactional(_update_remediation_verification_txn)
+        try:
+            new_version = await wrapped(transaction, doc_ref, expected_version, data)
+        except (EntityNotFoundError, VersionConflictError):
+            raise
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", verification_id) from exc
+        return updated_verification.model_copy(update={"version": new_version})
+
+    async def query(self, query: RemediationVerificationQuery) -> list[RemediationVerification]:
+        firestore_query = self._client.collection(_REMEDIATION_VERIFICATIONS)
+        if query.outcome is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("outcome", "==", query.outcome.value))
+        if query.status is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("status", "==", query.status.value))
+        if query.since is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("verification_started_at", ">=", query.since))
+        if query.until is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("verification_started_at", "<=", query.until))
+        firestore_query = firestore_query.order_by("verification_started_at", direction=firestore.Query.DESCENDING).limit(query.limit)
+
+        try:
+            results = []
+            async for snapshot in firestore_query.stream():
+                results.append(from_firestore_dict(RemediationVerification, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "RemediationVerification", "query") from exc

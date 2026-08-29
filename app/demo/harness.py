@@ -64,6 +64,7 @@ from app.domain import (
     SignalSource,
     SignalType,
     Ticket,
+    VerificationOutcome,
     WorkflowStage,
     WorkflowStatus,
     compute_fingerprint,
@@ -79,11 +80,13 @@ from app.persistence.memory import (
     InMemoryDecisionRepository,
     InMemoryDetectionRepository,
     InMemoryFeatureReviewRepository,
+    InMemoryRemediationVerificationRepository,
     InMemoryResolutionRepository,
     InMemorySignalRepository,
     InMemoryWorkflowRepository,
 )
 from app.signals.adapters import normalize_customer_feedback, normalize_support_feedback
+from app.verification import RemediationVerificationService
 
 from app.demo.verify import (
     verify_artifact_chain,
@@ -121,6 +124,7 @@ class DemoHarness:
         self.artifact_repo = InMemoryArtifactRepository()
         self.execution_repo = InMemoryAgentExecutionRepository()
         self.decision_repo = InMemoryDecisionRepository()
+        self.verification_repo = InMemoryRemediationVerificationRepository()
         self.registry = build_default_registry()
 
         self.orchestration = OrchestrationService(
@@ -140,6 +144,14 @@ class DemoHarness:
             RepositoryDetectionGateway(self.detection_repo),
             RepositorySignalGateway(self.signal_repo),
             jira_client=FakeJiraClient(),
+        )
+        self.verification_service = RemediationVerificationService(
+            resolution_repo=self.resolution_repo,
+            detection_repo=self.detection_repo,
+            workflow_repo=self.workflow_repo,
+            artifact_repo=self.artifact_repo,
+            signal_repo=self.signal_repo,
+            verification_repo=self.verification_repo,
         )
 
     # ---- shared plumbing --------------------------------------------------
@@ -474,6 +486,117 @@ class DemoHarness:
             "remediation_outcome_not_conflated_with_resolved",
             summary.remediation_outcome == "deployed_pending_verification",
             f"workflow.metadata['remediation_outcome']='{summary.remediation_outcome}' — deployment success alone is never reported as 'incident resolved'",
+        )
+
+        # 6b. RemediationVerificationService — the actual, deterministic
+        # check of whether the healthy post-remediation telemetry above
+        # means the incident is really resolved. This is the ONLY place
+        # in either scenario that ever reports "resolved" — never the
+        # deployment step itself.
+        verification = await self.verification_service.verify_remediation(resolution_id)
+        summary.extra["verification_id"] = verification.verification_id
+        summary.extra["verification_outcome"] = verification.outcome.value if verification.outcome else None
+        summary.record(
+            "healthy_remediation_verified_resolved",
+            verification.outcome == VerificationOutcome.VERIFIED_RESOLVED,
+            f"RemediationVerification '{verification.verification_id}' outcome='{verification.outcome}' reason='{verification.reason}'",
+        )
+        workflow_after_verification = await self.workflow_repo.get(final.workflow_id)
+        summary.record(
+            "workflow_metadata_reflects_verified_resolved",
+            workflow_after_verification.metadata.get("remediation_outcome") == "verified_resolved",
+            f"workflow.metadata['remediation_outcome']='{workflow_after_verification.metadata.get('remediation_outcome')}' after verification",
+        )
+
+        # Idempotency (§12): re-running verification for the same
+        # resolution/deployment must return the SAME record, never a
+        # duplicate — no new post-deployment evidence collection either.
+        verification_again = await self.verification_service.verify_remediation(resolution_id)
+        summary.record(
+            "verification_idempotent_rerun",
+            verification_again.verification_id == verification.verification_id,
+            f"verify_remediation('{resolution_id}') called again returned the same verification_id={verification_again.verification_id}",
+        )
+
+        # 6c. Failed remediation: a SECOND remediation cycle on the same
+        # original workflow, where the deployment succeeds but production
+        # telemetry afterward is STILL degraded — the code shipped but
+        # didn't actually fix the problem. Must never be reported as
+        # resolved.
+        second_error_log_entries = [
+            LogEntryResult(
+                insert_id="demo-log-2", timestamp=datetime.now(timezone.utc), severity="ERROR", message="Still throwing after the fix",
+                log_name="run.googleapis.com/stderr", resource_labels={"service_name": "quipu-demo"}, trace=None,
+            )
+        ]
+        second_incident_signal_ids = await self._run_monitoring(
+            workflow_id=final.workflow_id,
+            service_name="quipu-demo",
+            deployment_artifact_id=final.artifact_ids[-1],
+            monitoring_client=FakeCloudMonitoringClient(error_rate=0.06, latency_ms=800.0),
+            logging_client=FakeCloudLoggingClient(entries=second_error_log_entries),
+        )
+        second_detection_output = detection_output(
+            detection_type="incident",
+            title="Errors persist after remediation",
+            summary="Application errors continue after the first remediation deployment.",
+            rationale="Application-error signals for the same service persist after the remediation deployment.",
+            subject="quipu-demo",
+            supporting_signal_ids=second_incident_signal_ids,
+            confidence=0.88,
+            severity="critical",
+        )
+        second_detection_id = await self._run_detecting(
+            workflow_id=final.workflow_id, domain="operational", window_minutes=15, expected_output=second_detection_output
+        )
+        second_proposal = resolution_proposal(strategy="code_fix", supporting_signal_ids=second_incident_signal_ids, target_agent="deployment_agent")
+        second_resolution_id = await self._run_incident_resolution(workflow_id=final.workflow_id, detection_id=second_detection_id, proposal=second_proposal)
+
+        second_remediation = await self.orchestration.start_remediation_from_resolution(second_resolution_id)
+        with demo_agent_runner_patches(
+            codegen_text=json.dumps(VALID_CODEGEN), testing_text=json.dumps(VALID_TESTING_PASS), deployment_text=json.dumps(VALID_DEPLOYMENT), deployment_succeeds=True
+        ):
+            second_after_codegen = await self.orchestration.execute_next_step(second_remediation.workflow_id)
+            second_after_testing = await self.orchestration.execute_next_step(second_after_codegen.workflow_id)
+            second_final = await self.orchestration.execute_next_step(second_after_testing.workflow_id)
+        summary.record(
+            "second_remediation_deployed",
+            second_final.status == WorkflowStatus.COMPLETED,
+            f"second remediation workflow status='{second_final.status.value}'",
+        )
+
+        # Post-deployment telemetry STILL shows the same application-error
+        # condition — the fix did not actually work. A distinct insertId
+        # (never one already persisted as pre-remediation evidence) so
+        # this is genuinely NEW post-deployment evidence, not a dedup of
+        # the earlier log signal.
+        still_present_log_entries = [
+            LogEntryResult(
+                insert_id="demo-log-3", timestamp=datetime.now(timezone.utc), severity="ERROR", message="Still throwing after the fix",
+                log_name="run.googleapis.com/stderr", resource_labels={"service_name": "quipu-demo"}, trace=None,
+            )
+        ]
+        still_degraded_signal_ids = await self._run_monitoring(
+            workflow_id=second_final.workflow_id,
+            service_name="quipu-demo",
+            deployment_artifact_id=second_final.artifact_ids[-1],
+            monitoring_client=FakeCloudMonitoringClient(error_rate=0.0, latency_ms=100.0),
+            logging_client=FakeCloudLoggingClient(entries=still_present_log_entries),
+        )
+        summary.extra["still_degraded_signal_ids"] = still_degraded_signal_ids
+
+        still_degraded_verification = await self.verification_service.verify_remediation(second_resolution_id)
+        summary.extra["verification_outcome_still_degraded"] = still_degraded_verification.outcome.value if still_degraded_verification.outcome else None
+        summary.record(
+            "failed_remediation_still_degraded_never_reported_resolved",
+            still_degraded_verification.outcome == VerificationOutcome.STILL_DEGRADED,
+            f"RemediationVerification '{still_degraded_verification.verification_id}' outcome='{still_degraded_verification.outcome}' reason='{still_degraded_verification.reason}' — deployment succeeded but production evidence still shows the original condition",
+        )
+        second_workflow_after_verification = await self.workflow_repo.get(second_final.workflow_id)
+        summary.record(
+            "workflow_metadata_reflects_still_degraded",
+            second_workflow_after_verification.metadata.get("remediation_outcome") == "still_degraded",
+            f"workflow.metadata['remediation_outcome']='{second_workflow_after_verification.metadata.get('remediation_outcome')}' — never 'verified_resolved' while evidence still shows degradation",
         )
 
         # 7. Failure path #4: a second, unsafe (high-risk) resolution must

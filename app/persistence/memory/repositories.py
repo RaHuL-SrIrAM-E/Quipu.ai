@@ -5,11 +5,12 @@ semantics as FirestoreWorkflowRepository, so tests exercise real concurrency
 behaviour without needing a live Firestore connection.
 """
 
-from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, ResolutionResult, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, RemediationVerification, ResolutionResult, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.repositories.detection import DetectionQuery
 from app.persistence.repositories.feature_review import FeatureReviewQuery
 from app.persistence.repositories.incident import IncidentRecord
+from app.persistence.repositories.remediation_verification import RemediationVerificationQuery
 from app.persistence.repositories.resolution import ResolutionQuery
 from app.persistence.repositories.signal import SignalQuery
 
@@ -289,4 +290,60 @@ class InMemoryFeatureReviewRepository:
                 continue
             results.append(review.model_copy(deep=True))
         results.sort(key=lambda r: r.created_at, reverse=True)
+        return results[: query.limit]
+
+
+class InMemoryRemediationVerificationRepository:
+    def __init__(self):
+        self._store: dict[str, RemediationVerification] = {}
+        self._by_resolution: dict[str, list[str]] = {}  # resolution_id -> [verification_id, ...]
+        self._by_idempotency_key: dict[str, str] = {}  # idempotency_key -> verification_id
+
+    async def create(self, verification: RemediationVerification) -> RemediationVerification:
+        if verification.verification_id in self._store:
+            raise DuplicateEntityError("RemediationVerification", verification.verification_id)
+        self._store[verification.verification_id] = verification.model_copy(deep=True)
+        self._by_resolution.setdefault(verification.resolution_id, []).append(verification.verification_id)
+        self._by_idempotency_key[verification.idempotency_key] = verification.verification_id
+        return verification.model_copy(deep=True)
+
+    async def get(self, verification_id: str) -> RemediationVerification | None:
+        stored = self._store.get(verification_id)
+        return stored.model_copy(deep=True) if stored else None
+
+    async def find_by_resolution(self, resolution_id: str) -> list[RemediationVerification]:
+        ids = self._by_resolution.get(resolution_id, [])
+        return [self._store[i].model_copy(deep=True) for i in ids]
+
+    async def find_by_idempotency_key(self, idempotency_key: str) -> RemediationVerification | None:
+        verification_id = self._by_idempotency_key.get(idempotency_key)
+        if verification_id is None:
+            return None
+        return await self.get(verification_id)
+
+    async def update_if_version(
+        self, verification_id: str, expected_version: int, updated_verification: RemediationVerification
+    ) -> RemediationVerification:
+        current = self._store.get(verification_id)
+        if current is None:
+            raise EntityNotFoundError("RemediationVerification", verification_id)
+        if current.version != expected_version:
+            raise VersionConflictError(verification_id, expected_version, current.version)
+        new_verification = updated_verification.model_copy(update={"version": expected_version + 1})
+        self._store[verification_id] = new_verification.model_copy(deep=True)
+        return new_verification.model_copy(deep=True)
+
+    async def query(self, query: RemediationVerificationQuery) -> list[RemediationVerification]:
+        results = []
+        for verification in self._store.values():
+            if query.outcome is not None and verification.outcome != query.outcome:
+                continue
+            if query.status is not None and verification.status != query.status:
+                continue
+            if query.since is not None and verification.verification_started_at < query.since:
+                continue
+            if query.until is not None and verification.verification_started_at > query.until:
+                continue
+            results.append(verification.model_copy(deep=True))
+        results.sort(key=lambda v: v.verification_started_at, reverse=True)
         return results[: query.limit]

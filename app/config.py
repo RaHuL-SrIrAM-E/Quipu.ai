@@ -131,6 +131,19 @@ class Settings(BaseSettings):
     detection_min_operational_signals: int = 1
     detection_min_product_signals: int = 2
 
+    # Remediation Verification — used only by app/verification/. Governs
+    # how long after a remediation deployment to look for production
+    # evidence, and the safety floor below which "we don't have enough
+    # data" is the only allowed conclusion (never VERIFIED_RESOLVED).
+    # verification_latency_p99_threshold_ms is the "future policy addition"
+    # MonitoringAgent's own latency signal deliberately deferred (see
+    # app/agents/monitoring.py._collect_metrics) — implemented narrowly
+    # here, for verification's comparison only, not inside MonitoringAgent.
+    verification_window_minutes: int = 30
+    verification_minimum_post_deployment_signals: int = 1
+    verification_max_signals_per_condition: int = 20
+    verification_latency_p99_threshold_ms: float = 500.0
+
     log_level: str = "INFO"
 
 

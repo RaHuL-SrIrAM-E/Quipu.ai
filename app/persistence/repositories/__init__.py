@@ -4,6 +4,7 @@ from app.persistence.repositories.detection import DetectionQuery, DetectionRepo
 from app.persistence.repositories.execution import AgentExecutionRepository
 from app.persistence.repositories.feature_review import FeatureReviewQuery, FeatureReviewRepository
 from app.persistence.repositories.incident import IncidentRecord, IncidentRepository
+from app.persistence.repositories.remediation_verification import RemediationVerificationQuery, RemediationVerificationRepository
 from app.persistence.repositories.resolution import ResolutionQuery, ResolutionRepository
 from app.persistence.repositories.signal import SignalQuery, SignalRepository
 from app.persistence.repositories.workflow import WorkflowRepository
@@ -18,6 +19,8 @@ __all__ = [
     "FeatureReviewRepository",
     "IncidentRecord",
     "IncidentRepository",
+    "RemediationVerificationQuery",
+    "RemediationVerificationRepository",
     "ResolutionQuery",
     "ResolutionRepository",
     "SignalQuery",

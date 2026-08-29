@@ -36,6 +36,7 @@ from app.domain.enums import (
 )
 from app.domain.feature_review import FeatureReview
 from app.domain.knowledge import KnowledgeItem, KnowledgeQuery, KnowledgeRequest
+from app.domain.remediation_verification import RemediationVerification, VerificationOutcome, VerificationStatus, compute_verification_key
 from app.domain.resolution import ResolutionResult, compute_resolution_fingerprint
 from app.domain.signal import Signal, SignalProvenance, compute_fingerprint
 from app.domain.ticket import Ticket
@@ -64,6 +65,7 @@ __all__ = [
     "KnowledgeType",
     "RemediationRisk",
     "RemediationStrategy",
+    "RemediationVerification",
     "ResolutionResult",
     "RetrievalStrategy",
     "ReviewStatus",
@@ -76,10 +78,13 @@ __all__ = [
     "Ticket",
     "ToolExecution",
     "ToolRequest",
+    "VerificationOutcome",
+    "VerificationStatus",
     "WorkflowStage",
     "WorkflowState",
     "WorkflowStatus",
     "compute_detection_fingerprint",
     "compute_fingerprint",
     "compute_resolution_fingerprint",
+    "compute_verification_key",
 ]

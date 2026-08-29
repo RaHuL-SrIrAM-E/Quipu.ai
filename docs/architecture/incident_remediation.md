@@ -236,6 +236,17 @@ task: no recursive `Detecting → Resolution → Detecting` loop is built in
 this level; that pairs with the existing 3.1/3.2 agents unchanged,
 whenever a future level wires the loop closed).
 
+> **Update**: implemented in a later task — see
+> `docs/architecture/remediation_verification.md`.
+> `RemediationVerificationService` (`app/verification/`) is what turns
+> `"deployed_pending_verification"` into a real, evidence-based
+> `"verified_resolved"`/`"still_degraded"`/`"insufficient_evidence"`/
+> `"escalated"` marker, by comparing real post-deployment Signals
+> (produced by the unchanged `MonitoringAgent`) against the original
+> incident's condition. Still no recursive `Detecting → Resolution →
+> Detecting` loop — verification is a deterministic comparison, not
+> another Detecting pass (see that doc §10).
+
 ## 9. Workflow identity — why the ORIGINAL workflow is reopened
 
 `CodegenAgent` and `ArchitectureAgent` both **hard-require** their
