@@ -307,6 +307,14 @@ it can never retract the persisted Signal or the ack (see
 
 ## 14. Future event-driven DetectingAgent integration
 
+> **Update**: implemented in a later task — see
+> `docs/architecture/event_driven_detection.md`. `NoOpDetectionTrigger`
+> described below has been replaced in production wiring by
+> `app.detection.trigger.DetectionProcessorTrigger`, which invokes a new
+> `DetectionProcessor` (`app/detection/`) that calls the existing
+> `DetectingAgent`. `DetectionTrigger`'s payload also changed from the
+> full `Signal` to a smaller `SignalAvailableEvent` — see that doc §2.
+
 We will integrate actual event-driven DetectingAgent invocation in a
 subsequent task, behind the same `DetectionTrigger` interface — most
 likely a trigger implementation that enqueues a detection request (e.g.

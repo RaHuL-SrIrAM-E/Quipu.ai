@@ -60,7 +60,7 @@ settings = get_settings()
 # accidentally (or a compromised caller can't deliberately) point Detecting
 # at an unrelated signal population. A caller MAY narrow this via
 # signal_types, never widen past what each domain's SignalType values are.
-_OPERATIONAL_SIGNAL_TYPES = [
+OPERATIONAL_SIGNAL_TYPES = [
     SignalType.METRIC_ANOMALY,
     SignalType.LATENCY_ANOMALY,
     SignalType.AVAILABILITY_DEGRADATION,
@@ -68,14 +68,14 @@ _OPERATIONAL_SIGNAL_TYPES = [
     SignalType.APPLICATION_ERROR,
     SignalType.DEPLOYMENT_EVENT,
 ]
-_PRODUCT_SIGNAL_TYPES = [
+PRODUCT_SIGNAL_TYPES = [
     SignalType.CUSTOMER_FEEDBACK,
     SignalType.SUPPORT_FEEDBACK,
     SignalType.FEATURE_REQUEST_PATTERN,
     SignalType.USER_BEHAVIOR,
     SignalType.ADOPTION_ANOMALY,
 ]
-_DOMAIN_SIGNAL_TYPES = {DetectionDomain.OPERATIONAL: _OPERATIONAL_SIGNAL_TYPES, DetectionDomain.PRODUCT: _PRODUCT_SIGNAL_TYPES}
+DOMAIN_SIGNAL_TYPES = {DetectionDomain.OPERATIONAL: OPERATIONAL_SIGNAL_TYPES, DetectionDomain.PRODUCT: PRODUCT_SIGNAL_TYPES}
 
 # Evidence-first floor (§18 of the task): a detection_type other than
 # NO_ACTION requires at least this many verified (non-fabricated)
@@ -389,7 +389,7 @@ class DetectingAgent(QuipuAgent):
         if AgentCapability.READ_SIGNALS not in granted:
             raise CapabilityError(self.identity.agent_id, AgentCapability.READ_SIGNALS)
 
-        signal_types = detecting_input.signal_types or _DOMAIN_SIGNAL_TYPES[detecting_input.domain]
+        signal_types = detecting_input.signal_types or DOMAIN_SIGNAL_TYPES[detecting_input.domain]
         since = datetime.now(timezone.utc) - timedelta(minutes=detecting_input.window_minutes)
 
         collected: dict[str, Signal] = {}

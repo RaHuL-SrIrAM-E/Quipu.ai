@@ -20,7 +20,7 @@ from app.eventing.envelope import EventEnvelope, IngestionEventType
 from app.eventing.errors import IngestionError, IngestionFailureCategory
 from app.eventing.ingestion_service import IngestOutcome, SignalIngestionService
 from app.eventing.protocols import PubSubConsumer, PubSubMessage, PubSubPublisher
-from app.eventing.trigger import DetectionTrigger, NoOpDetectionTrigger
+from app.eventing.trigger import DetectionTrigger, NoOpDetectionTrigger, SignalAvailableEvent
 
 __all__ = [
     "DetectionTrigger",
@@ -33,5 +33,6 @@ __all__ = [
     "PubSubConsumer",
     "PubSubMessage",
     "PubSubPublisher",
+    "SignalAvailableEvent",
     "SignalIngestionService",
 ]

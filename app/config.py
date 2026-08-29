@@ -116,6 +116,21 @@ class Settings(BaseSettings):
     pubsub_pull_max_messages: int = 20
     pubsub_api_timeout_seconds: float = 30.0
 
+    # Detection Processor — used only by app/detection/ (the event-driven
+    # DetectionTrigger -> DetectingAgent boundary). Reuses
+    # detecting_max_signals/detecting_max_window_minutes (DetectingAgent's
+    # own ceilings, app/agents/detecting.py) rather than duplicating them;
+    # these are the NEW per-domain knobs the processor itself owns: the
+    # default evidence window per DetectionDomain (product signals
+    # meaningfully accumulate over days/weeks; operational anomalies need a
+    # short recent window), and the minimum number of related signals
+    # required before DetectingAgent (and therefore Gemini) is invoked at
+    # all — see docs/architecture/event_driven_detection.md "Aggregation".
+    detection_operational_window_minutes: int = 30
+    detection_product_window_minutes: int = 10080  # 7 days
+    detection_min_operational_signals: int = 1
+    detection_min_product_signals: int = 2
+
     log_level: str = "INFO"
 
 

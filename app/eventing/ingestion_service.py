@@ -29,7 +29,7 @@ from app.eventing.envelope import EventEnvelope
 from app.eventing.errors import IngestionError, IngestionFailureCategory
 from app.eventing.mapping import SUPPORTED_SOURCES, resolve_adapter
 from app.eventing.protocols import PubSubMessage
-from app.eventing.trigger import DetectionTrigger, NoOpDetectionTrigger
+from app.eventing.trigger import DetectionTrigger, NoOpDetectionTrigger, SignalAvailableEvent
 from app.persistence.repositories.signal import SignalRepository
 
 logger = get_logger("quipu.eventing.ingestion")
@@ -115,7 +115,7 @@ class SignalIngestionService:
         await message.ack()
 
         try:
-            await self._trigger.on_signal_available(saved)
+            await self._trigger.on_signal_available(SignalAvailableEvent.from_signal(saved))
         except Exception:
             # The Signal is already persisted and the message already
             # acked — a trigger failure must never retract either. See
