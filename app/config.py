@@ -59,6 +59,23 @@ class Settings(BaseSettings):
     cloud_run_max_instances_ceiling: int = 10
     cloud_run_deploy_timeout_seconds: float = 300.0
 
+    # Cloud Monitoring / Cloud Logging — used only by
+    # app/core/cloud_monitoring_client.py and app/core/cloud_logging_client.py,
+    # MonitoringAgent's Google observability adapters. Reuses
+    # cloud_run_allowed_regions/cloud_run_allowed_environments above as the
+    # scope boundary (Monitoring only ever observes Cloud Run services, so a
+    # second allow-list would just duplicate that one) — the model can never
+    # widen these through MonitoringInput. Windows/result counts are bounded
+    # so a query can't turn into unrestricted production data extraction.
+    monitoring_default_window_minutes: int = 15
+    monitoring_max_window_minutes: int = 1440  # 24h ceiling
+    monitoring_log_query_limit: int = 50
+    monitoring_log_query_max_limit: int = 200
+    monitoring_min_log_severity: str = "ERROR"
+    monitoring_error_rate_warning_threshold: float = 0.05  # 5% — operational collection policy, not AI reasoning; see docs/architecture/monitoring_agent.md §10
+    monitoring_error_rate_critical_threshold: float = 0.15
+    monitoring_api_timeout_seconds: float = 30.0
+
     log_level: str = "INFO"
 
 

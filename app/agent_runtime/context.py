@@ -11,6 +11,7 @@ from typing import Any
 
 from app.agent_runtime.gateways.artifacts import ArtifactGateway
 from app.agent_runtime.gateways.knowledge import KnowledgeGateway
+from app.agent_runtime.gateways.signals import SignalGateway
 from app.agent_runtime.gateways.tools import ToolGateway
 from app.core.observability import get_logger
 from app.persistence.repositories.execution import AgentExecutionRepository
@@ -33,3 +34,9 @@ class AgentContext:
     # quick local/dev invocation); agents must treat that as "don't persist,"
     # not as an error.
     executions: AgentExecutionRepository | None = None
+
+    # Optional (Level 3.1 bridge, same shape as `executions` above): lets an
+    # agent persist Signals through SignalRepository. Only MonitoringAgent
+    # uses this today — every other existing agent leaves it None and is
+    # unaffected, since it defaults to None like `executions` did.
+    signals: SignalGateway | None = None

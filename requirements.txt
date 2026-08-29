@@ -8,6 +8,8 @@ google-genai
 google-cloud-discoveryengine
 google-cloud-firestore
 google-cloud-run
+google-cloud-monitoring
+google-cloud-logging
 requests
 python-dotenv
 pytest

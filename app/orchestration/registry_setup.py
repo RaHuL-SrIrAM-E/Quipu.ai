@@ -1,15 +1,20 @@
 """Builds the AgentRegistry the orchestrator resolves agents through.
 
-Only the five currently-implemented Quipu-native agents are registered.
-Adding Monitoring/Detecting/Incident-Resolution later is just another
-registry.register(...) call — nothing in the orchestrator hardcodes these
-beyond STAGE_TO_AGENT_ID in app.orchestration.transitions.
+The five SDLC agents (Planning/Architecture/Codegen/Testing/Deployment) plus
+MonitoringAgent (Level 3.1) are registered here. MonitoringAgent is
+deliberately NOT part of STAGE_ORDER/STAGE_TO_AGENT_ID in
+app.orchestration.transitions — it is not an SDLC stage; it's a standalone
+observation agent invoked directly (or by a future scheduler), not through
+OrchestrationService.execute_next_step(). Registering it here still makes
+it resolvable via registry.get("monitoring_agent"), consistent with how
+every other Quipu-native agent is discovered.
 """
 
 from app.agent_runtime.registry import AgentRegistry
 from app.agents.architecture import ArchitectureAgent
 from app.agents.codegen import CodegenAgent
 from app.agents.deployment import DeploymentAgent
+from app.agents.monitoring import MonitoringAgent
 from app.agents.planning import PlanningAgent
 from app.agents.testing import TestingAgent
 
@@ -21,4 +26,5 @@ def build_default_registry() -> AgentRegistry:
     registry.register(CodegenAgent())
     registry.register(TestingAgent())
     registry.register(DeploymentAgent())
+    registry.register(MonitoringAgent())
     return registry

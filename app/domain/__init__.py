@@ -21,10 +21,15 @@ from app.domain.enums import (
     ErrorCategory,
     KnowledgeType,
     RetrievalStrategy,
+    SignalSeverity,
+    SignalSource,
+    SignalStatus,
+    SignalType,
     WorkflowStage,
     WorkflowStatus,
 )
 from app.domain.knowledge import KnowledgeItem, KnowledgeQuery, KnowledgeRequest
+from app.domain.signal import Signal, SignalProvenance, compute_fingerprint
 from app.domain.ticket import Ticket
 from app.domain.tool import ToolExecution, ToolRequest
 from app.domain.workflow import WorkflowState
@@ -46,10 +51,17 @@ __all__ = [
     "KnowledgeRequest",
     "KnowledgeType",
     "RetrievalStrategy",
+    "Signal",
+    "SignalProvenance",
+    "SignalSeverity",
+    "SignalSource",
+    "SignalStatus",
+    "SignalType",
     "Ticket",
     "ToolExecution",
     "ToolRequest",
     "WorkflowStage",
     "WorkflowState",
     "WorkflowStatus",
+    "compute_fingerprint",
 ]

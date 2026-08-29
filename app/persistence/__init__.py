@@ -17,6 +17,8 @@ from app.persistence.repositories import (
     DecisionRepository,
     IncidentRecord,
     IncidentRepository,
+    SignalQuery,
+    SignalRepository,
     WorkflowRepository,
 )
 
@@ -29,6 +31,8 @@ __all__ = [
     "IncidentRecord",
     "IncidentRepository",
     "PersistenceError",
+    "SignalQuery",
+    "SignalRepository",
     "VersionConflictError",
     "WorkflowRepository",
 ]

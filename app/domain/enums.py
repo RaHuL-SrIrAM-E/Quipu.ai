@@ -98,3 +98,67 @@ class RetrievalStrategy(StrEnum):
     SEMANTIC = "semantic"
     KEYWORD = "keyword"
     HYBRID = "hybrid"
+
+
+class SignalType(StrEnum):
+    """What kind of thing was observed. Operational values describe
+    production/runtime evidence; product values describe customer/usage
+    evidence. Deliberately not exhaustive — only categories the Level 3
+    Signal architecture (and its future Monitoring/Detecting consumers)
+    actually need are defined here."""
+
+    # Operational
+    METRIC_ANOMALY = "metric_anomaly"
+    LOG_ERROR = "log_error"
+    APPLICATION_ERROR = "application_error"
+    DEPLOYMENT_EVENT = "deployment_event"
+    AVAILABILITY_DEGRADATION = "availability_degradation"
+    LATENCY_ANOMALY = "latency_anomaly"
+
+    # Product
+    CUSTOMER_FEEDBACK = "customer_feedback"
+    SUPPORT_FEEDBACK = "support_feedback"
+    FEATURE_REQUEST_PATTERN = "feature_request_pattern"
+    USER_BEHAVIOR = "user_behavior"
+    ADOPTION_ANOMALY = "adoption_anomaly"
+
+
+class SignalSource(StrEnum):
+    """Where a Signal's evidence originated. Identifies the origin system,
+    not the specific adapter implementation — app/signals/adapters.py maps
+    each of these to a normalization function."""
+
+    CLOUD_MONITORING = "cloud_monitoring"
+    CLOUD_LOGGING = "cloud_logging"
+    CLOUD_RUN = "cloud_run"
+    CUSTOMER_FEEDBACK = "customer_feedback"
+    SUPPORT_SYSTEM = "support_system"
+    PRODUCT_ANALYTICS = "product_analytics"
+    USER_BEHAVIOR = "user_behavior"
+    INTERNAL_SYSTEM = "internal_system"
+
+
+class SignalSeverity(StrEnum):
+    """How important the observed evidence is. This is NOT a diagnosis or a
+    priority assignment — it reflects the source's own signal about
+    importance (e.g. a Cloud Monitoring alert's severity, or how many times
+    the same feedback was repeated), carried through unchanged."""
+
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+class SignalStatus(StrEnum):
+    """Ingestion-pipeline state, NOT Detecting's interpretation of the
+    signal. A Signal's evidence fields never change across these states —
+    only this field does, as the (currently synchronous) ingestion pipeline
+    progresses. Every adapter in this level produces AVAILABLE signals
+    directly; OBSERVED/INGESTED exist for a future asynchronous ingestion
+    pipeline (e.g. a Pub/Sub-delivered payload staged before validation
+    completes) and are not reachable through any code in this level."""
+
+    OBSERVED = "observed"
+    INGESTED = "ingested"
+    AVAILABLE = "available"

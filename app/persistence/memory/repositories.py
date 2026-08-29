@@ -5,9 +5,10 @@ semantics as FirestoreWorkflowRepository, so tests exercise real concurrency
 behaviour without needing a live Firestore connection.
 """
 
-from app.domain import AgentExecution, Artifact, Decision, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, Signal, WorkflowState
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.repositories.incident import IncidentRecord
+from app.persistence.repositories.signal import SignalQuery
 
 
 class InMemoryWorkflowRepository:
@@ -120,3 +121,45 @@ class InMemoryIncidentRepository:
 
     async def list_for_workflow(self, workflow_id: str) -> list[IncidentRecord]:
         return [i.model_copy(deep=True) for i in self._store.get(workflow_id, {}).values()]
+
+
+class InMemorySignalRepository:
+    def __init__(self):
+        self._store: dict[str, Signal] = {}
+        self._by_fingerprint: dict[str, str] = {}  # fingerprint -> signal_id
+
+    async def save(self, signal: Signal) -> Signal:
+        self._store[signal.signal_id] = signal.model_copy(deep=True)
+        self._by_fingerprint[signal.fingerprint] = signal.signal_id
+        return signal.model_copy(deep=True)
+
+    async def get(self, signal_id: str) -> Signal | None:
+        signal = self._store.get(signal_id)
+        return signal.model_copy(deep=True) if signal else None
+
+    async def find_by_fingerprint(self, fingerprint: str) -> Signal | None:
+        signal_id = self._by_fingerprint.get(fingerprint)
+        if signal_id is None:
+            return None
+        return await self.get(signal_id)
+
+    async def query(self, query: SignalQuery) -> list[Signal]:
+        results = []
+        for signal in self._store.values():
+            if query.signal_type is not None and signal.signal_type != query.signal_type:
+                continue
+            if query.source is not None and signal.source != query.source:
+                continue
+            if query.service_name is not None and signal.service_name != query.service_name:
+                continue
+            if query.environment is not None and signal.environment != query.environment:
+                continue
+            if query.severity is not None and signal.severity != query.severity:
+                continue
+            if query.since is not None and signal.observed_at < query.since:
+                continue
+            if query.until is not None and signal.observed_at > query.until:
+                continue
+            results.append(signal.model_copy(deep=True))
+        results.sort(key=lambda s: s.observed_at, reverse=True)
+        return results[: query.limit]

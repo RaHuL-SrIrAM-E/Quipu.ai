@@ -11,6 +11,7 @@ from app.persistence.firestore.repositories import (
     FirestoreArtifactRepository,
     FirestoreDecisionRepository,
     FirestoreIncidentRepository,
+    FirestoreSignalRepository,
     FirestoreWorkflowRepository,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "FirestoreConfigError",
     "FirestoreDecisionRepository",
     "FirestoreIncidentRepository",
+    "FirestoreSignalRepository",
     "FirestoreWorkflowRepository",
     "get_firestore_client",
 ]
