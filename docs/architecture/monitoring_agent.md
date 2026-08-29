@@ -438,6 +438,14 @@ Only marked "Implemented" where real SDK/API calls exist and are exercised
 by the code in this repository — no adapter-contract-only entry is listed
 as implemented.
 
+> **Update**: Pub/Sub was added as a real-time event-driven ingestion
+> transport for Signals in a later task — see
+> `docs/architecture/pubsub_signal_ingestion.md`. MonitoringAgent itself is
+> unchanged; Cloud Monitoring/Cloud Logging events are now reachable via
+> either MonitoringAgent's scheduled pull (this doc) or Pub/Sub push
+> ingestion (the new doc), both producing the same `Signal` model through
+> the same adapters.
+
 ## 20. Limitations / deferred work
 
 - **No latency threshold**: latency observations are always recorded at

@@ -100,6 +100,22 @@ class Settings(BaseSettings):
     incident_resolution_max_evidence: int = 50
     incident_resolution_min_confidence_for_auto_remediation: float = 0.7
 
+    # Pub/Sub — used only by app/eventing/google_pubsub_client.py, the
+    # Google event-transport adapter for Signal ingestion (see
+    # docs/architecture/pubsub_signal_ingestion.md). Auth via Application
+    # Default Credentials, same as every other Google integration above.
+    # Reuses gcp_project_id — Pub/Sub lives in the same GCP project as
+    # everything else. pubsub_max_message_bytes bounds untrusted message
+    # size before it's even JSON-decoded; pubsub_dead_letter_topic is
+    # optional deployment-time policy (configured on the subscription
+    # itself), never required for local tests.
+    pubsub_signal_topic: str | None = None
+    pubsub_signal_subscription: str | None = None
+    pubsub_dead_letter_topic: str | None = None
+    pubsub_max_message_bytes: int = 262144  # 256 KiB
+    pubsub_pull_max_messages: int = 20
+    pubsub_api_timeout_seconds: float = 30.0
+
     log_level: str = "INFO"
 
 
