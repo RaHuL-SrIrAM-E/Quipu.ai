@@ -191,7 +191,7 @@ class RemediationStrategy(StrEnum):
     """What Incident Resolution recommends — a closed set that maps 1:1
     onto an existing, already-implemented Quipu agent (or explicit human
     escalation), never an open string the model could use to invent a
-    target. See app.agents.incident_resolution._STRATEGY_TARGET_AGENT for
+    target. See app.agents.incident_resolution.STRATEGY_TARGET_AGENT for
     the deterministic strategy -> agent mapping. Deliberately excludes a
     CONFIGURATION_CHANGE value: no safe, existing execution path for
     mutating configuration exists anywhere in Quipu today, so that outcome

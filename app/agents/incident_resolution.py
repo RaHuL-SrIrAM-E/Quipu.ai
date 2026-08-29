@@ -75,7 +75,7 @@ settings = get_settings()
 # keyed by the (already-validated, closed-enum) remediation_strategy. This
 # closes the "target_agent = malicious_agent" attack surface structurally,
 # not just by allow-list checking a string.
-_STRATEGY_TARGET_AGENT: dict[RemediationStrategy, str | None] = {
+STRATEGY_TARGET_AGENT: dict[RemediationStrategy, str | None] = {
     RemediationStrategy.CODE_FIX: "codegen_agent",
     RemediationStrategy.RETEST: "testing_agent",
     RemediationStrategy.ARCHITECTURE_REVIEW: "architecture_agent",
@@ -112,7 +112,7 @@ class ResolutionProposal(BaseModel):
     """What the internal LlmAgent is allowed to produce — Gemini's proposed
     diagnosis and remediation. `target_agent` IS included so the model can
     express its own view, but it is never trusted directly — see
-    _STRATEGY_TARGET_AGENT and _apply_safety_policy(). Fields the agent
+    STRATEGY_TARGET_AGENT and _apply_safety_policy(). Fields the agent
     computes deterministically (detection_id, fingerprint, resolved_at)
     are NOT part of this schema."""
 
@@ -518,7 +518,7 @@ class IncidentResolutionAgent(QuipuAgent):
         execution: AgentExecution,
         metrics: AgentMetrics,
     ) -> AgentOutput:
-        target_agent = _STRATEGY_TARGET_AGENT[proposal.remediation_strategy]
+        target_agent = STRATEGY_TARGET_AGENT[proposal.remediation_strategy]
 
         fingerprint = compute_resolution_fingerprint(
             detection_id=detection.detection_id, remediation_strategy=proposal.remediation_strategy, subject=detection.subject
@@ -532,6 +532,7 @@ class IncidentResolutionAgent(QuipuAgent):
             resolution = ResolutionResult(
                 resolution_id=str(uuid.uuid4()),
                 detection_id=detection.detection_id,
+                workflow_id=agent_input.workflow_id,
                 diagnosis_summary=proposal.diagnosis_summary,
                 probable_root_cause=proposal.probable_root_cause,
                 root_cause_confidence=proposal.root_cause_confidence,

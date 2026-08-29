@@ -211,3 +211,16 @@ def test_resolution_result_is_distinct_model():
     assert ResolutionResult is not Ticket
     assert "artifact_type" not in ResolutionResult.model_fields
     assert "ticket_id" not in ResolutionResult.model_fields
+
+
+# ---- Level 3.6: workflow_id (Incident Resolution -> Remediation) ------------
+
+
+def test_workflow_id_defaults_none():
+    resolution = make_resolution()
+    assert resolution.workflow_id is None
+
+
+def test_workflow_id_can_be_set():
+    resolution = make_resolution(workflow_id="wf-123")
+    assert resolution.workflow_id == "wf-123"

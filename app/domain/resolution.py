@@ -70,6 +70,21 @@ class ResolutionResult(BaseModel):
     # mutate the original DetectionResult).
     detection_id: str
 
+    # Level 3.6 (Incident Resolution -> Authorized Remediation): the
+    # ORIGINAL deploying workflow this resolution's evidence correlates to
+    # — set by IncidentResolutionAgent from its own AgentInput.workflow_id
+    # (the existing calling convention that already made deployment-
+    # artifact correlation work in Level 3.3 — see
+    # app.agents.incident_resolution._perform's artifact_evidence lookup).
+    # None if the agent was invoked without a meaningful workflow context.
+    # OrchestrationService.start_remediation_from_resolution() requires
+    # this to be set: CODE_FIX/ARCHITECTURE_REVIEW remediation reopens
+    # *this* workflow (its artifacts — Plan/Architecture — already live
+    # there, since Artifact storage is workflow-scoped) rather than
+    # creating a new one with no accessible input artifact. See
+    # docs/architecture/incident_remediation.md "Workflow identity".
+    workflow_id: str | None = None
+
     diagnosis_summary: str
     probable_root_cause: str
     root_cause_confidence: float = Field(ge=0.0, le=1.0)  # confidence in the DIAGNOSIS, separate from severity/risk

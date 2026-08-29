@@ -20,6 +20,8 @@ from app.agent_runtime.gateways.artifacts import RepositoryArtifactGateway
 from app.agent_runtime.gateways.knowledge import KnowledgeGateway
 from app.agent_runtime.gateways.tools import ToolGateway
 from app.agent_runtime.registry import AgentNotFoundError, AgentRegistry
+from app.agents.incident_resolution import STRATEGY_TARGET_AGENT
+from app.config import get_settings
 from app.core.observability import get_logger
 from app.domain import (
     AgentInput,
@@ -27,6 +29,9 @@ from app.domain import (
     Decision,
     DecisionAction,
     DecisionSource,
+    DetectionType,
+    RemediationRisk,
+    RemediationStrategy,
     ReviewStatus,
     Ticket,
     WorkflowStage,
@@ -57,8 +62,10 @@ from app.orchestration.transitions import (
 from app.persistence.errors import VersionConflictError
 from app.persistence.repositories.artifact import ArtifactRepository
 from app.persistence.repositories.decision import DecisionRepository
+from app.persistence.repositories.detection import DetectionRepository
 from app.persistence.repositories.execution import AgentExecutionRepository
 from app.persistence.repositories.feature_review import FeatureReviewRepository
+from app.persistence.repositories.resolution import ResolutionRepository
 from app.persistence.repositories.workflow import WorkflowRepository
 
 logger = get_logger("quipu.orchestration.service")
@@ -79,6 +86,8 @@ class OrchestrationService:
         tool_gateway: ToolGateway,
         decision_runner_cls=None,
         review_repo: FeatureReviewRepository | None = None,
+        detection_repo: DetectionRepository | None = None,
+        resolution_repo: ResolutionRepository | None = None,
     ):
         self._workflow_repo = workflow_repo
         self._artifact_repo = artifact_repo
@@ -93,6 +102,10 @@ class OrchestrationService:
         # None is valid for every caller that doesn't use that entry point —
         # existing construction sites are unaffected.
         self._review_repo = review_repo
+        # Optional (Level 3.6): only needed by start_remediation_from_resolution().
+        # Same backward-compatible shape as review_repo above.
+        self._detection_repo = detection_repo
+        self._resolution_repo = resolution_repo
 
     # ---- public API -----------------------------------------------------
 
@@ -189,6 +202,152 @@ class OrchestrationService:
             "workflow %s started from approved FeatureReview %s (detection %s)", workflow.workflow_id, review_id, review.detection_id
         )
         return workflow
+
+    async def start_remediation_from_resolution(self, resolution_id: str) -> WorkflowState:
+        """Level 3.6 — the Incident Resolution -> authorized remediation
+        entry point. "Gemini recommends, application policy authorizes,
+        the orchestrator executes, agents perform the work" — see
+        docs/architecture/incident_remediation.md.
+
+        Deliberately does NOT create a new WorkflowState. CodegenAgent and
+        ArchitectureAgent both hard-require their upstream artifact
+        (ArchitectureArtifact / PlanArtifact respectively — see
+        app.agents.codegen/app.agents.architecture), and Artifact storage
+        is workflow-scoped (workflows/{workflow_id}/artifacts/{id}). The
+        only place those artifacts already exist is the ORIGINAL workflow
+        that deployed the code now causing the incident — identified by
+        ResolutionResult.workflow_id (set by IncidentResolutionAgent from
+        its own AgentInput.workflow_id). So remediation *reopens* that
+        workflow (COMPLETED -> PENDING, current_stage jumped to the entry
+        stage for the authorized strategy) rather than inventing a new
+        WorkflowState/IncidentWorkflow concept — every existing mechanism
+        (execute_next_step, _reconcile_stage crash recovery, retry
+        budgets, transition policy, the Testing/Deployment evidence gates)
+        then applies completely unchanged, because it's the same
+        WorkflowState machinery every other workflow already uses.
+
+        Authorization (§13 of the task) is re-derived deterministically
+        here, never trusted from the persisted ResolutionResult alone —
+        this is a defense-in-depth backstop re-checking the exact
+        invariants IncidentResolutionAgent's own _apply_safety_policy
+        already enforces before ever persisting a non-escalation
+        ResolutionResult (Level 3.3), not a second, competing risk policy.
+        `resolution.target_agent` is never read at all — the entry stage
+        is derived purely from `remediation_strategy` via the SAME
+        STRATEGY_TARGET_AGENT map IncidentResolutionAgent itself uses,
+        reusing `_stage_for_agent()` already defined below.
+
+        Idempotent per resolution_id (§23) and concurrency-safe via
+        WorkflowRepository.update_if_version (§25) — see the module-level
+        tests in tests/test_incident_remediation.py for the full matrix.
+        """
+        if self._resolution_repo is None:
+            raise OrchestrationError("ResolutionRepository is not configured — cannot start remediation")
+        if self._detection_repo is None:
+            raise OrchestrationError("DetectionRepository is not configured — cannot start remediation")
+
+        resolution = await self._resolution_repo.get(resolution_id)
+        if resolution is None:
+            raise OrchestrationError(f"ResolutionResult '{resolution_id}' not found")
+
+        detection = await self._detection_repo.get(resolution.detection_id)
+        if detection is None or detection.detection_type != DetectionType.INCIDENT:
+            raise OrchestrationError(
+                f"ResolutionResult '{resolution_id}' is not associated with a valid INCIDENT DetectionResult"
+            )
+
+        if resolution.workflow_id is None:
+            raise OrchestrationError(
+                f"ResolutionResult '{resolution_id}' has no associated workflow_id — cannot locate the artifacts to remediate"
+            )
+        workflow = await self._workflow_repo.get(resolution.workflow_id)
+        if workflow is None:
+            raise OrchestrationError(f"workflow '{resolution.workflow_id}' referenced by ResolutionResult '{resolution_id}' not found")
+
+        actioned = workflow.metadata.get("remediation_resolution_ids", [])
+        if resolution_id in actioned:
+            return workflow  # idempotent — already actioned on this workflow, no duplicate execution
+
+        if workflow.status != WorkflowStatus.COMPLETED:
+            raise OrchestrationError(
+                f"workflow '{workflow.workflow_id}' is not COMPLETED (status='{workflow.status.value}') — cannot start remediation"
+            )
+
+        strategy = self._authorize_remediation_strategy(resolution)
+
+        new_metadata = {
+            **workflow.metadata,
+            "remediation_resolution_ids": [*actioned, resolution_id],
+            "remediation_detection_id": resolution.detection_id,
+            "remediation_strategy": strategy.value,
+        }
+
+        if strategy == RemediationStrategy.ESCALATE:
+            updated = workflow.model_copy(update={"status": WorkflowStatus.ESCALATED, "metadata": new_metadata})
+            result = await self._commit_remediation_update(workflow, updated, resolution_id)
+            logger.info("workflow %s escalated for remediation of resolution %s", workflow.workflow_id, resolution_id)
+            return result
+
+        if strategy == RemediationStrategy.NO_ACTION:
+            updated = workflow.model_copy(update={"metadata": new_metadata})
+            result = await self._commit_remediation_update(workflow, updated, resolution_id)
+            logger.info("workflow %s: no remediation action authorized for resolution %s", workflow.workflow_id, resolution_id)
+            return result
+
+        # CODE_FIX / ARCHITECTURE_REVIEW — reopen the workflow at the
+        # deterministically-derived entry stage. target_agent is derived
+        # from `strategy`, never read from `resolution.target_agent`.
+        target_agent = STRATEGY_TARGET_AGENT[strategy]
+        entry_stage = self._stage_for_agent(target_agent)
+        updated = workflow.model_copy(update={"status": WorkflowStatus.PENDING, "current_stage": entry_stage, "metadata": new_metadata})
+        result = await self._commit_remediation_update(workflow, updated, resolution_id)
+        logger.info(
+            "workflow %s reopened at stage %s for %s remediation (resolution %s)",
+            workflow.workflow_id,
+            entry_stage.value,
+            strategy.value,
+            resolution_id,
+        )
+        return result
+
+    def _authorize_remediation_strategy(self, resolution) -> RemediationStrategy:
+        """Deterministic re-authorization backstop (§13 A-E). Can only ever
+        downgrade toward ESCALATE — never upgrade or invent a more
+        permissive outcome than what was already persisted. ROLLBACK is
+        deliberately never auto-executed regardless of how it validates —
+        see docs/architecture/incident_remediation.md 'Rollback behavior'
+        for why no safe automated Cloud Run rollback exists yet."""
+        strategy = resolution.remediation_strategy
+
+        if strategy == RemediationStrategy.ROLLBACK:
+            return RemediationStrategy.ESCALATE
+
+        if strategy in (RemediationStrategy.ESCALATE, RemediationStrategy.NO_ACTION):
+            return strategy
+
+        settings = get_settings()
+        if resolution.risk == RemediationRisk.HIGH:
+            return RemediationStrategy.ESCALATE
+        if resolution.root_cause_confidence < settings.incident_resolution_min_confidence_for_auto_remediation:
+            return RemediationStrategy.ESCALATE
+        if not resolution.supporting_signal_ids:
+            return RemediationStrategy.ESCALATE
+
+        return strategy
+
+    async def _commit_remediation_update(self, workflow: WorkflowState, updated: WorkflowState, resolution_id: str) -> WorkflowState:
+        """The atomic claim step (§25): only one of two concurrent
+        start_remediation_from_resolution calls for the same resolution_id
+        can win this write. The loser re-reads and returns the winner's
+        state if it already reflects this resolution_id having been
+        actioned — never silently duplicating remediation."""
+        try:
+            return await self._workflow_repo.update_if_version(workflow.workflow_id, workflow.version, updated)
+        except VersionConflictError:
+            current = await self._workflow_repo.get(workflow.workflow_id)
+            if current is not None and resolution_id in current.metadata.get("remediation_resolution_ids", []):
+                return current
+            raise
 
     async def execute_next_step(self, workflow_id: str) -> WorkflowState:
         """Runs exactly one stage forward, or reconciles already-completed
@@ -448,11 +607,19 @@ class OrchestrationService:
     async def _execute_decision(self, workflow: WorkflowState, decision: Decision) -> WorkflowState:
         if decision.action == DecisionAction.CONTINUE:
             nxt = next_stage(workflow.current_stage)
-            update = (
-                {"status": WorkflowStatus.PENDING, "current_stage": nxt}
-                if nxt
-                else {"status": WorkflowStatus.COMPLETED, "current_stage": WorkflowStage.COMPLETED}
-            )
+            if nxt:
+                update = {"status": WorkflowStatus.PENDING, "current_stage": nxt}
+            else:
+                update = {"status": WorkflowStatus.COMPLETED, "current_stage": WorkflowStage.COMPLETED}
+                if workflow.metadata.get("remediation_resolution_ids"):
+                    # Level 3.6 (§20/§21): deployment succeeding is NOT the
+                    # same fact as "the incident is resolved" — that
+                    # requires Monitoring/Detecting to actually observe
+                    # post-deployment signals, which is explicitly out of
+                    # scope for this synchronous completion step (§22: no
+                    # recursive Detecting->Resolution loop here). Recorded
+                    # via existing metadata, no new WorkflowStatus value.
+                    update["metadata"] = {**workflow.metadata, "remediation_outcome": "deployed_pending_verification"}
             return await self._workflow_repo.update_if_version(workflow.workflow_id, workflow.version, workflow.model_copy(update=update))
 
         if decision.action == DecisionAction.COMPLETE:
