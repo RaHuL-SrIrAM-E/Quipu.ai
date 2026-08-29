@@ -9,7 +9,7 @@ that don't need that guarantee (e.g. immediately after create()).
 
 from typing import Protocol, runtime_checkable
 
-from app.domain import WorkflowState
+from app.domain import WorkflowState, WorkflowStatus
 
 
 @runtime_checkable
@@ -19,6 +19,16 @@ class WorkflowRepository(Protocol):
         ...
 
     async def get(self, workflow_id: str) -> WorkflowState | None: ...
+
+    async def list_recent(self, *, status: WorkflowStatus | None = None, limit: int = 50) -> list[WorkflowState]:
+        """Added for the Control Plane API's `GET /workflows` (§4 of that
+        task) — the only listing WorkflowRepository needed until now, since
+        every prior caller always already had a workflow_id in hand.
+        WorkflowState carries no timestamp field of its own (Level 1.1
+        scope), so ordering is implementation-defined (insertion order for
+        the in-memory repo, `__name__` document order for Firestore) rather
+        than a fabricated recency guarantee; always bounded by `limit`."""
+        ...
 
     async def update(self, workflow: WorkflowState) -> WorkflowState:
         """Unconditional overwrite. Raises EntityNotFoundError if missing."""

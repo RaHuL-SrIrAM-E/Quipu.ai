@@ -132,6 +132,31 @@ class Settings(BaseSettings):
     pubsub_worker_poll_interval_seconds: float = 5.0
     pubsub_worker_shutdown_timeout_seconds: float = 30.0
 
+    # Control Plane API — used only by app/api/ (see
+    # docs/architecture/control_plane_api.md). api_cors_allow_origins is
+    # deliberately empty by default (no CORS grant at all) rather than "*"
+    # — a deployer must explicitly list the UI's real origin(s).
+    # api_default_page_size/api_max_page_size bound every collection
+    # endpoint so a caller can never request an unbounded Firestore scan.
+    # api_auth_mode is the honest, minimal boundary this level ships:
+    # "development" trusts a caller-supplied identity HEADER for
+    # audit/attribution only (never a privilege flag — see
+    # app/api/auth.py) and grants the fixed capability set a human
+    # reviewer needs; a real deployment sets api_auth_mode="disabled" to
+    # refuse every authenticated endpoint until a real identity provider
+    # is wired in behind the same dependency.
+    api_cors_allow_origins: list[str] = []
+    api_default_page_size: int = 50
+    api_max_page_size: int = 200
+    api_auth_mode: str = "development"
+    # Explicit opt-in only (never auto-detected from ui/dist existing on
+    # disk — that made `pytest` behavior depend on whether someone had
+    # locally run `npm run build`, which is exactly the kind of
+    # environment-dependent flakiness this flag avoids). Set true only in
+    # the production Docker image, which always bundles ui/dist. See
+    # docs/architecture/control_plane_ui.md "Cloud Run deployment".
+    api_serve_ui: bool = False
+
     # Detection Processor — used only by app/detection/ (the event-driven
     # DetectionTrigger -> DetectingAgent boundary). Reuses
     # detecting_max_signals/detecting_max_window_minutes (DetectingAgent's

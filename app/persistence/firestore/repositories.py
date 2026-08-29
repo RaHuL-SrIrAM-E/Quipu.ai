@@ -27,7 +27,7 @@ from google.api_core import exceptions as google_exceptions
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, RemediationVerification, ResolutionResult, Signal, WorkflowState
+from app.domain import AgentExecution, Artifact, Decision, DetectionResult, FeatureReview, RemediationVerification, ResolutionResult, Signal, WorkflowState, WorkflowStatus
 from app.persistence.errors import DuplicateEntityError, EntityNotFoundError, VersionConflictError
 from app.persistence.firestore.errors import translate_firestore_error
 from app.persistence.repositories.detection import DetectionQuery
@@ -141,6 +141,19 @@ class FirestoreWorkflowRepository:
         except google_exceptions.GoogleAPICallError as exc:
             raise translate_firestore_error(exc, "WorkflowState", workflow_id) from exc
         return updated_workflow.model_copy(update={"version": new_version})
+
+    async def list_recent(self, *, status: WorkflowStatus | None = None, limit: int = 50) -> list[WorkflowState]:
+        query = self._client.collection(_WORKFLOWS)
+        if status is not None:
+            query = query.where(filter=FieldFilter("status", "==", status.value))
+        query = query.limit(limit)
+        try:
+            results = []
+            async for snapshot in query.stream():
+                results.append(from_firestore_dict(WorkflowState, snapshot.to_dict()))
+            return results
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "WorkflowState", "list_recent") from exc
 
 
 def _subcollection(client: "firestore.AsyncClient", workflow_id: str, name: str):
@@ -341,6 +354,8 @@ class FirestoreSignalRepository:
             firestore_query = firestore_query.where(filter=FieldFilter("environment", "==", query.environment))
         if query.severity is not None:
             firestore_query = firestore_query.where(filter=FieldFilter("severity", "==", query.severity.value))
+        if query.status is not None:
+            firestore_query = firestore_query.where(filter=FieldFilter("status", "==", query.status.value))
         if query.since is not None:
             firestore_query = firestore_query.where(filter=FieldFilter("observed_at", ">=", query.since))
         if query.until is not None:

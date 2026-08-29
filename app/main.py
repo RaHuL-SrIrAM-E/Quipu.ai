@@ -1,15 +1,8 @@
-from fastapi import FastAPI
+"""ASGI entrypoint — `uvicorn app.main:app` and Cloud Run both serve this.
+Re-exports the real application factory result from app.api.app; see
+docs/architecture/control_plane_api.md "Cloud Run deployment".
+"""
 
-from app.api.routes import router
-from app.config import get_settings
-from app.db.base import Base, engine
+from app.api.app import app
 
-settings = get_settings()
-
-app = FastAPI(title=settings.app_name)
-app.include_router(router, prefix="/api")
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    Base.metadata.create_all(bind=engine)
+__all__ = ["app"]

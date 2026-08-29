@@ -52,6 +52,10 @@ class InMemoryWorkflowRepository:
         self._store[workflow_id] = new_state.model_copy(deep=True)
         return new_state.model_copy(deep=True)
 
+    async def list_recent(self, *, status=None, limit: int = 50) -> list[WorkflowState]:
+        results = [w.model_copy(deep=True) for w in self._store.values() if status is None or w.status == status]
+        return results[-limit:][::-1]  # most-recently-inserted first, bounded
+
 
 class InMemoryArtifactRepository:
     def __init__(self):
@@ -159,6 +163,8 @@ class InMemorySignalRepository:
             if query.environment is not None and signal.environment != query.environment:
                 continue
             if query.severity is not None and signal.severity != query.severity:
+                continue
+            if query.status is not None and signal.status != query.status:
                 continue
             if query.since is not None and signal.observed_at < query.since:
                 continue

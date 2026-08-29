@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-from app.domain import Signal, SignalSeverity, SignalSource, SignalType
+from app.domain import Signal, SignalSeverity, SignalSource, SignalStatus, SignalType
 
 
 class SignalQuery(BaseModel):
@@ -23,13 +23,17 @@ class SignalQuery(BaseModel):
     range, type, source, service, environment, severity. Deliberately not a
     general search API; all fields are optional equality/range filters,
     ANDed together. `limit` bounds the result size (repositories must not
-    return unbounded result sets)."""
+    return unbounded result sets). `status` was added for the Control
+    Plane API's `GET /signals` (app/api/routes/signals.py) — every prior
+    caller (MonitoringAgent, DetectingAgent) only ever needed the other
+    filters, since they always operate on AVAILABLE signals."""
 
     signal_type: SignalType | None = None
     source: SignalSource | None = None
     service_name: str | None = None
     environment: str | None = None
     severity: SignalSeverity | None = None
+    status: SignalStatus | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = Field(default=50, gt=0, le=500)
