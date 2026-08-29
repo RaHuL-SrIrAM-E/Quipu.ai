@@ -1,6 +1,29 @@
+import os
 from functools import lru_cache
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Loaded before Settings (and before any app.agents.* module, which all
+# import this module first) — so .env can override GOOGLE_GENAI_USE_VERTEXAI
+# below, and load_dotenv() never overwrites a real environment variable
+# that's already set (e.g. one set by Cloud Run's own env-var config).
+load_dotenv()
+
+# google-genai — which every ADK LlmAgent uses internally (see
+# app/agents/*.py, app/orchestration/adk/decision_agent.py) — reads this
+# environment variable DIRECTLY, not through the Settings class below, to
+# decide Vertex AI+ADC vs. the Gemini Developer API+API key. Setting it
+# here (not merely documenting it) is what actually makes every LlmAgent
+# construction site use ADC-only Vertex AI by default, in every
+# environment, unless a deployer explicitly opts out. See
+# docs/deployment/gcp.md §4. setdefault() never overrides an operator's
+# own explicit choice (e.g. deliberately testing against the Gemini
+# Developer API with GOOGLE_GENAI_USE_VERTEXAI=false) — and has no effect
+# on the test suite either way, since every LlmAgent's real client
+# construction is monkeypatched out at the InMemoryRunner seam in tests,
+# never actually reaching google-genai's credential resolution.
+os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
 
 
 class Settings(BaseSettings):
@@ -14,7 +37,14 @@ class Settings(BaseSettings):
 
     gcp_project_id: str | None = None
     gcp_location: str = "us-central1"
-    gemini_model: str = "gemini-2.5-pro"
+    # The one centralized model id every LlmAgent construction site reads
+    # (app/agents/*.py, app/orchestration/adk/decision_agent.py) — never
+    # hardcoded per-agent. Hackathon requirement: Gemini 3.5 or newer,
+    # accessed via Vertex AI (see the GOOGLE_GENAI_USE_VERTEXAI env var
+    # set below, not a Settings field) rather than a developer API key.
+    # Deterministic agents (MonitoringAgent) have no LlmAgent and
+    # therefore never read this setting.
+    gemini_model: str = "gemini-3.5-flash"
     google_application_credentials: str | None = None
 
     jira_base_url: str | None = None
