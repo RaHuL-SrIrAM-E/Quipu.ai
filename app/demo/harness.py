@@ -53,6 +53,8 @@ from app.demo.fakes import (
 )
 from app.demo.patching import demo_agent_runner_patches
 from app.demo.summary import DemoSummary
+from app.detection.action_processor import DetectionActionProcessor
+from app.detection.action_trigger import DetectionAvailableEvent
 from app.domain import (
     AgentInput,
     DecisionSource,
@@ -166,6 +168,23 @@ class DemoHarness:
             RepositorySignalGateway(self.signal_repo),
             jira_client=FakeJiraClient(),
         )
+        # The SAME DetectionActionProcessor production uses (app.eventing.
+        # worker_main) — exercises the real Detection -> Action boundary
+        # instead of the harness hand-calling FeatureReviewService.
+        # create_review()/IncidentResolutionAgent.execute() directly, so a
+        # regression in that wiring is caught here too, not just in
+        # production.
+        self.action_processor = DetectionActionProcessor(
+            review_service=self.review_service,
+            incident_agent=IncidentResolutionAgent(),
+            signal_gateway=RepositorySignalGateway(self.signal_repo),
+            detection_gateway=RepositoryDetectionGateway(self.detection_repo),
+            artifact_gateway=RepositoryArtifactGateway(self.artifact_repo),
+            resolution_gateway=RepositoryResolutionGateway(self.resolution_repo),
+            knowledge_gateway=FakeKnowledgeGateway(),
+            tool_gateway=FakeToolGateway(),
+            execution_repo=self.execution_repo,
+        )
         self.verification_service = RemediationVerificationService(
             resolution_repo=self.resolution_repo,
             detection_repo=self.detection_repo,
@@ -217,20 +236,17 @@ class DemoHarness:
             raise RuntimeError(f"DetectingAgent failed: {output.errors}")
         return json.loads(output.messages[1])["detection_id"]
 
-    async def _run_incident_resolution(self, *, workflow_id: str, detection_id: str, proposal: dict) -> str:
+    async def _run_incident_resolution(self, *, detection_id: str, proposal: dict) -> str:
+        """Routes through the real production Detection -> Action boundary
+        (self.action_processor) rather than constructing IncidentResolutionAgent
+        and its AgentContext by hand — workflow_id is resolved by
+        DetectionActionProcessor itself from the detection's supporting
+        evidence, exactly as production does, not passed in by the caller."""
         with demo_agent_runner_patches(resolution_text=json.dumps(proposal)):
-            agent = IncidentResolutionAgent()
-            context = self._agent_context(workflow_id, f"demo-resolve-{detection_id}")
-            agent_input = AgentInput(
-                workflow_id=workflow_id,
-                agent_name="incident_resolution_agent",
-                ticket=Ticket(title="demo resolution", description="demo resolution"),
-                context={"detection_id": detection_id},
+            outcome = await self.action_processor.process_detection_available(
+                DetectionAvailableEvent(detection_id=detection_id, detection_type=DetectionType.INCIDENT)
             )
-            output = await agent.execute(agent_input, context)
-        if output.status != WorkflowStatus.COMPLETED:
-            raise RuntimeError(f"IncidentResolutionAgent failed: {output.errors}")
-        return json.loads(output.messages[1])["resolution_id"]
+        return outcome.resolution_id
 
     async def _run_monitoring(
         self, *, workflow_id: str, service_name: str, deployment_artifact_id: str | None, monitoring_client, logging_client
@@ -291,9 +307,13 @@ class DemoHarness:
         passed, detail = await verify_detection(self.detection_repo, detection_id, DetectionType.FEATURE_OPPORTUNITY)
         summary.record("detection_is_feature_opportunity", passed, detail)
 
-        # 3. FeatureReviewService — real deterministic review workflow
-        # (Level 3.4). No LLM anywhere in this step.
-        review = await self.review_service.create_review(detection_id)
+        # 3. Detection -> Action boundary (the same DetectionActionProcessor
+        # production uses) -> FeatureReviewService.create_review(). No LLM
+        # anywhere in this step.
+        outcome = await self.action_processor.process_detection_available(
+            DetectionAvailableEvent(detection_id=detection_id, detection_type=DetectionType.FEATURE_OPPORTUNITY)
+        )
+        review = await self.review_repo.get(outcome.review_id)
         passed, detail = await verify_review(self.review_repo, review.review_id, ReviewStatus.PENDING)
         summary.record("review_created_pending", passed, detail)
 
@@ -309,11 +329,13 @@ class DemoHarness:
 
         # Failure path #5: idempotent re-entry — re-creating a review for
         # the same detection must return the SAME review, never a duplicate.
-        review_again = await self.review_service.create_review(detection_id)
+        outcome_again = await self.action_processor.process_detection_available(
+            DetectionAvailableEvent(detection_id=detection_id, detection_type=DetectionType.FEATURE_OPPORTUNITY)
+        )
         summary.record(
             "idempotent_review_recreate",
-            review_again.review_id == review.review_id,
-            f"create_review() called again for detection '{detection_id}' returned the same review_id={review_again.review_id}",
+            outcome_again.review_id == review.review_id,
+            f"action processor invoked again for detection '{detection_id}' returned the same review_id={outcome_again.review_id}",
         )
 
         # 4. OrchestrationService.start_workflow_from_review — the real
@@ -444,7 +466,7 @@ class DemoHarness:
         # claims target_agent="deployment_agent" (adversarial) — proven
         # ignored in step 5.
         proposal = resolution_proposal(strategy="code_fix", supporting_signal_ids=incident_signal_ids, target_agent="deployment_agent")
-        resolution_id = await self._run_incident_resolution(workflow_id=original.workflow_id, detection_id=detection_id, proposal=proposal)
+        resolution_id = await self._run_incident_resolution(detection_id=detection_id, proposal=proposal)
         summary.resolution_id = resolution_id
         passed, detail = await verify_resolution(self.resolution_repo, resolution_id, expected_strategy="code_fix")
         summary.record("resolution_recommends_code_fix", passed, detail)
@@ -571,7 +593,7 @@ class DemoHarness:
             workflow_id=final.workflow_id, domain="operational", window_minutes=15, expected_output=second_detection_output
         )
         second_proposal = resolution_proposal(strategy="code_fix", supporting_signal_ids=second_incident_signal_ids, target_agent="deployment_agent")
-        second_resolution_id = await self._run_incident_resolution(workflow_id=final.workflow_id, detection_id=second_detection_id, proposal=second_proposal)
+        second_resolution_id = await self._run_incident_resolution(detection_id=second_detection_id, proposal=second_proposal)
 
         second_remediation = await self.orchestration.start_remediation_from_resolution(second_resolution_id)
         with demo_agent_runner_patches(
@@ -633,6 +655,11 @@ class DemoHarness:
             summary="Data corruption suspected in the export pipeline",
             service_name="quipu-demo",
             environment="production",
+            # Correlates back to the same deploying workflow (original) via
+            # its own artifact_id — same field a real MonitoringAgent-
+            # produced Signal would carry, needed by DetectionActionProcessor
+            # to resolve the owning WorkflowState for incident resolution.
+            deployment_artifact_id=deployment_artifact_id,
             provenance=SignalProvenance(source_system="demo", source_event_id="demo-unsafe-1"),
             fingerprint=compute_fingerprint(source=SignalSource.CLOUD_LOGGING, source_event_id="demo-unsafe-1", subject="quipu-demo"),
         )
@@ -651,7 +678,7 @@ class DemoHarness:
             workflow_id=original.workflow_id, domain="operational", window_minutes=15, expected_output=unsafe_detection_output
         )
         unsafe_proposal = resolution_proposal(strategy="code_fix", supporting_signal_ids=[unsafe_signal.signal_id], risk="high", root_cause_confidence=0.55)
-        unsafe_resolution_id = await self._run_incident_resolution(workflow_id=original.workflow_id, detection_id=unsafe_detection_id, proposal=unsafe_proposal)
+        unsafe_resolution_id = await self._run_incident_resolution(detection_id=unsafe_detection_id, proposal=unsafe_proposal)
         passed, detail = await verify_resolution(self.resolution_repo, unsafe_resolution_id, expected_strategy="escalate")
         summary.record("unsafe_resolution_already_downgraded_by_agent_policy", passed, detail)
 

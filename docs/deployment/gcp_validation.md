@@ -207,3 +207,65 @@ No new secret, hardcoded project ID, or debug flag was introduced.
 access (Gemini model default, Vertex AI/ADC enforcement), verified both
 are actually consumed by the runtime, and left every deployment-dependent
 item honestly marked BLOCKED rather than fabricated.**
+
+## 2026-08-30 follow-up: live corrections against quipu-507109
+
+`gcloud` and live GCP credentials (owner) became available. This pass
+applied the corrections identified by a live validation against the
+project, and made no other changes. See `docs/deployment/gcp.md` for the
+full current-state description; this section records only what changed
+and what was decided not to change.
+
+**Code changes**:
+- `Settings.gemini_model` default: `gemini-3.5-flash` → `gemini-2.5-flash`
+  (`app/config.py`), live-verified via a real `google.genai` Vertex AI
+  call against `quipu-507109`/`us-central1` — the old default 404s, the
+  new one works (`gemini-2.5-pro` also works, not used as the default).
+  `.env.example` and `scripts/smoke_test_gemini.py` updated to match; no
+  other hardcoded model id exists in the repo (repo-wide grep confirmed).
+- `Dockerfile.worker` added (repo root) — independent build for
+  `python -m app.eventing.worker_main`, same `requirements.txt`, no UI
+  stage. The existing root `Dockerfile` (API+UI) is unchanged.
+
+**Live GCP changes** (`quipu-507109`):
+- `quipu-signals-sub`: ack deadline 10s → 60s; dead-letter policy wired
+  to `quipu-signals-dlq` with `maxDeliveryAttempts=5`.
+- IAM: Pub/Sub service agent
+  (`service-608549741775@gcp-sa-pubsub.iam.gserviceaccount.com`) granted
+  `roles/pubsub.publisher` on `quipu-signals-dlq` and
+  `roles/pubsub.subscriber` on `quipu-signals-sub` — required for DLQ
+  forwarding, verified via `get-iam-policy` on both resources.
+- No other live resources were created, modified, or deleted. No Cloud
+  Run service or worker-pool was deployed.
+
+**IAM audited, not changed**: `roles/iam.serviceAccountUser`,
+`roles/logging.logWriter`, `roles/discoveryengine.viewer` were reviewed
+against actual code (`CloudRunDeployer`, `cloud_logging_client.py`,
+`app/api/container.py`) and found not required by the live default
+request path — none were granted to `quipu-api-sa`/`quipu-worker-sa`.
+`docs/deployment/gcp.md` §8 now documents the reasoning per role instead
+of listing them as required. `quipu-api-sa`/`quipu-worker-sa` role sets
+were not otherwise touched.
+
+**Firestore indexes**: repository query shapes reviewed
+(`app/persistence/firestore/repositories.py`) and the fixed field lists
+per repository documented in `docs/deployment/gcp.md` §5 — but which
+*combinations* need a composite index still cannot be determined without
+live query traffic (every filter is optional). No `firestore.indexes.json`
+was authored; still BLOCKED on live traffic, as before.
+
+**CloudRunDeployer / service account**: confirmed by reading
+`app/core/cloud_run_client.py` and a repo-wide grep for
+`service_account`/impersonation that `deploy_cloud_run` never attaches a
+service account to the Cloud Run services it deploys — no code change
+made, since the architecture does not require one today.
+
+**Tests**: full backend (`pytest`) and frontend (`vitest run`) suites run
+after the code changes above — see the test run this pass recorded
+separately for pass/fail counts.
+
+**Remaining BLOCKED items** (unchanged from the section above, still
+true): no Cloud Run service/worker-pool deployed yet, worker image not
+yet built/pushed, Firestore composite indexes not yet discoverable,
+Discovery Engine/Agent Search not enabled or wired, Jira not configured.
+This task did not deploy anything, per its own instruction.

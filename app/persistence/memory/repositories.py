@@ -72,6 +72,12 @@ class InMemoryArtifactRepository:
     async def list_for_workflow(self, workflow_id: str) -> list[Artifact]:
         return [a.model_copy(deep=True) for a in self._store.get(workflow_id, {}).values()]
 
+    async def find_owning_workflow_id(self, artifact_id: str) -> str | None:
+        for workflow_id, artifacts in self._store.items():
+            if artifact_id in artifacts:
+                return workflow_id
+        return None
+
 
 class InMemoryAgentExecutionRepository:
     def __init__(self):

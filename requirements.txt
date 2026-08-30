@@ -7,6 +7,7 @@ pydantic-settings
 google-genai
 google-cloud-discoveryengine
 google-cloud-firestore
+google-cloud-pubsub
 google-cloud-run
 google-cloud-monitoring
 google-cloud-logging

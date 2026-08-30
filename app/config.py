@@ -39,12 +39,15 @@ class Settings(BaseSettings):
     gcp_location: str = "us-central1"
     # The one centralized model id every LlmAgent construction site reads
     # (app/agents/*.py, app/orchestration/adk/decision_agent.py) — never
-    # hardcoded per-agent. Hackathon requirement: Gemini 3.5 or newer,
-    # accessed via Vertex AI (see the GOOGLE_GENAI_USE_VERTEXAI env var
-    # set below, not a Settings field) rather than a developer API key.
-    # Deterministic agents (MonitoringAgent) have no LlmAgent and
-    # therefore never read this setting.
-    gemini_model: str = "gemini-3.5-flash"
+    # hardcoded per-agent, accessed via Vertex AI (see the
+    # GOOGLE_GENAI_USE_VERTEXAI env var set below, not a Settings field)
+    # rather than a developer API key. Deterministic agents
+    # (MonitoringAgent) have no LlmAgent and therefore never read this
+    # setting. "gemini-3.5-flash" (the prior default) 404s against live
+    # Vertex AI in quipu-507109/us-central1 — live-verified against that
+    # project on 2026-08-30; "gemini-2.5-flash" and "gemini-2.5-pro" both
+    # work. Re-verify before bumping to a newer model.
+    gemini_model: str = "gemini-2.5-flash"
     google_application_credentials: str | None = None
 
     jira_base_url: str | None = None

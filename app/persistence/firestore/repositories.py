@@ -191,6 +191,22 @@ class FirestoreArtifactRepository:
         except google_exceptions.GoogleAPICallError as exc:
             raise translate_firestore_error(exc, "Artifact", workflow_id) from exc
 
+    async def find_owning_workflow_id(self, artifact_id: str) -> str | None:
+        """Collection-group query across every workflow's `artifacts`
+        subcollection, matched by the `artifact_id` field already stored
+        in each document body. The owning workflow_id is read off the
+        matched document's own path (workflows/{workflow_id}/artifacts/
+        {artifact_id}) — the authoritative relationship — never inferred
+        from any other field. Requires a collection-group-scoped index on
+        `artifact_id` (see firestore.indexes.json)."""
+        try:
+            query = self._client.collection_group("artifacts").where(filter=FieldFilter("artifact_id", "==", artifact_id)).limit(1)
+            async for snapshot in query.stream():
+                return snapshot.reference.parent.parent.id
+            return None
+        except google_exceptions.GoogleAPICallError as exc:
+            raise translate_firestore_error(exc, "Artifact", artifact_id) from exc
+
 
 class FirestoreAgentExecutionRepository:
     def __init__(self, client: "firestore.AsyncClient"):

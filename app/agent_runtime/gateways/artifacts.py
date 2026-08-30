@@ -20,6 +20,7 @@ from app.persistence.repositories.artifact import ArtifactRepository
 class ArtifactGateway(Protocol):
     async def get(self, workflow_id: str, artifact_id: str) -> Artifact | None: ...
     async def save(self, workflow_id: str, artifact: Artifact) -> Artifact: ...
+    async def find_owning_workflow_id(self, artifact_id: str) -> str | None: ...
 
 
 class RepositoryArtifactGateway:
@@ -33,3 +34,6 @@ class RepositoryArtifactGateway:
 
     async def save(self, workflow_id: str, artifact: Artifact) -> Artifact:
         return await self._repository.save(workflow_id, artifact)
+
+    async def find_owning_workflow_id(self, artifact_id: str) -> str | None:
+        return await self._repository.find_owning_workflow_id(artifact_id)

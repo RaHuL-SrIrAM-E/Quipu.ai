@@ -13,12 +13,17 @@ Owns exactly one responsibility chain:
 It does not retrieve/rank/interpret evidence itself (DetectingAgent's own
 `_retrieve_evidence`/Gemini call remain the only place that happens), does
 not fabricate a DetectionResult, and does not call FeatureReviewService or
-IncidentResolutionAgent — persisting a DetectionResult is where this
-processor's job ends. What happens with a FEATURE_OPPORTUNITY or INCIDENT
-DetectionResult afterward (human review, remediation authorization) is
-deliberately left to whatever already-existing flow consumes DetectionResult
-by id (see docs/architecture/event_driven_detection.md "Product/incident
-flows") — never invoked automatically from here.
+IncidentResolutionAgent itself — persisting a DetectionResult is where
+THIS class's own job ends. What happens with a FEATURE_OPPORTUNITY or
+INCIDENT DetectionResult afterward is delegated to whatever ActionTrigger
+this processor was constructed with (app.detection.action_trigger),
+invoked only after the DetectionResult is confirmed persisted — the same
+"interpret vs. act" separation SignalIngestionService/DetectionTrigger
+already established one layer up. Defaults to NoOpActionTrigger, so
+callers that don't need Action processing (e.g. a future test harness) are
+unaffected. See app.detection.action_processor.DetectionActionProcessor
+for the real implementation and docs/architecture/event_driven_detection.md
+"Product/incident flows".
 """
 
 import asyncio
@@ -36,6 +41,7 @@ from app.agent_runtime.gateways.tools import ToolGateway
 from app.agents.detecting import DetectingAgent
 from app.config import get_settings
 from app.core.observability import get_logger
+from app.detection.action_trigger import ActionTrigger, DetectionAvailableEvent, NoOpActionTrigger
 from app.detection.policy import SIGNAL_TYPE_TO_DOMAIN, AggregationPolicy, count_related_signals
 from app.domain import AgentInput, DetectionDomain, Ticket, WorkflowStatus
 from app.eventing.trigger import SignalAvailableEvent
@@ -77,6 +83,7 @@ class DetectionProcessor:
         execution_repo: AgentExecutionRepository | None = None,
         policy: AggregationPolicy | None = None,
         detecting_agent: DetectingAgent | None = None,
+        action_trigger: ActionTrigger | None = None,
     ):
         self._signals = signal_gateway
         self._detections = detection_gateway
@@ -86,6 +93,7 @@ class DetectionProcessor:
         self._executions = execution_repo
         self._policy = policy or AggregationPolicy.from_settings()
         self._agent = detecting_agent or DetectingAgent()
+        self._action_trigger = action_trigger or NoOpActionTrigger()
         # Serializes concurrent processing for the same aggregation scope
         # (domain/service_name/environment) so two near-simultaneous
         # triggers can't both race past DetectingAgent's own
@@ -186,6 +194,7 @@ class DetectionProcessor:
 
         detection_id = None
         detection_type = None
+        detection = None
         if len(output.messages) > 1:
             detection_id = json.loads(output.messages[1])["detection_id"]
             detection = await self._detections.get(detection_id)
@@ -200,6 +209,20 @@ class DetectionProcessor:
             detection_type,
             duration_ms,
         )
+
+        # Only after the DetectionResult is confirmed persisted (the
+        # `self._detections.get(detection_id)` fetch above returned a real
+        # record) does this processor's job end and the Action boundary
+        # begin. A failure here is never swallowed inside this class — it
+        # propagates to whatever already-existing failure boundary called
+        # process_signal_available (SignalIngestionService's own
+        # trigger-failure handling for the worker path), exactly like a
+        # DetectingAgent failure already does today.
+        if detection is not None:
+            await self._action_trigger.on_detection_available(
+                DetectionAvailableEvent(detection_id=detection.detection_id, detection_type=detection.detection_type)
+            )
+
         return DetectionProcessingOutcome(
             signal_id=event.signal_id,
             invoked_detecting_agent=True,

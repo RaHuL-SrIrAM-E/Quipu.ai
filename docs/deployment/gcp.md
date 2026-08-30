@@ -1,12 +1,26 @@
 # Deploying Quipu to Google Cloud
 
-**Status of this document**: written from a static audit of the codebase
-in an environment with no `gcloud` CLI and no GCP credentials available
-(see `docs/hackathon/submission_readiness.md` §C). Every command below is
-believed correct against the current code but has **not** been executed
-end-to-end against a live project during this audit. Treat this as a
-validated plan, not a verified runbook, until someone with GCP access
-walks it once and reports back.
+**Status of this document**: as of 2026-08-30, project `quipu-507109`
+(region `us-central1`) has live-verified provisioning for the following —
+confirmed by direct `gcloud`/API inspection, not merely planned:
+
+- Artifact Registry Docker repo `quipu` (`us-central1`).
+- Firestore `(default)` database, `FIRESTORE_NATIVE`, `us-central1`.
+- Pub/Sub topics `quipu-signals` and `quipu-signals-dlq`; subscription
+  `quipu-signals-sub` (60s ack deadline, dead-letter policy pointed at
+  `quipu-signals-dlq` with `maxDeliveryAttempts=5`; the Pub/Sub service
+  agent holds `roles/pubsub.publisher` on the DLQ topic and
+  `roles/pubsub.subscriber` on the source subscription — required for
+  DLQ forwarding to actually work).
+- Service accounts `quipu-api-sa` and `quipu-worker-sa`, IAM bindings
+  reduced to what current code actually needs — see §8.
+- The live-verified Gemini model default (`gemini-2.5-flash` — see §4).
+
+Not yet done: no Cloud Run service or worker-pool has been deployed, no
+Docker image has been built/pushed. Firestore composite indexes remain
+undiscovered (see §5 — this can only be done against live query
+traffic). Treat §§9–10 below as a validated plan for the *first* deploy,
+not yet a verified runbook.
 
 ## 1. Prerequisites
 
@@ -34,7 +48,6 @@ gcloud services enable \
   firestore.googleapis.com \
   pubsub.googleapis.com \
   aiplatform.googleapis.com \
-  discoveryengine.googleapis.com \
   monitoring.googleapis.com \
   logging.googleapis.com \
   artifactregistry.googleapis.com
@@ -44,6 +57,15 @@ gcloud services enable \
 Gemini through **Vertex AI**, not the standalone Gemini Developer API —
 see §4's `GOOGLE_GENAI_USE_VERTEXAI` note, which is the single most
 important environment variable in this whole deployment.
+
+`discoveryengine.googleapis.com` is deliberately **not** in this list —
+it is optional and not required for the live default API path. Agent
+Search (`app/knowledge/backends/google_search.py`) is real and tested but
+`app/api/container.py` does not wire it into the default
+`OrchestrationService` (see §7); enable this API only when that wiring is
+done and a real Discovery Engine data store is created. Confirmed as of
+2026-08-30: this API is not enabled on `quipu-507109`, and nothing in the
+live default request path needs it.
 
 ## 4. Gemini / ADK credential mode — read this first
 
@@ -93,6 +115,16 @@ not part of the live request path and should not be relied on as
 evidence of Vertex AI usage; the actual agents' ADK `LlmAgent`s are what
 need `GOOGLE_GENAI_USE_VERTEXAI=true` set at the process level.
 
+**Model id, live-verified 2026-08-30**: `Settings.gemini_model`'s prior
+default, `gemini-3.5-flash`, returns `404 NOT_FOUND` from Vertex AI
+against `quipu-507109`/`us-central1` (confirmed via a real
+`google.genai.Client(vertexai=True, ...).models.generate_content()` call,
+not just a REST probe). `gemini-2.5-flash` and `gemini-2.5-pro` both
+succeeded and are the current default (`gemini-2.5-flash`). Re-run this
+check against the target project before ever bumping the default again —
+model availability is project/region-specific and cannot be assumed from
+documentation.
+
 ## 5. Firestore setup
 
 ```bash
@@ -119,8 +151,34 @@ exercise each list/filter endpoint once (via the UI or `curl`), follow
 every `FailedPrecondition` link that appears, then export the resulting
 indexes with `gcloud firestore indexes composite list --format=json` and
 check that output into the repo as `firestore.indexes.json` for future
-`gcloud firestore indexes composite create` reproducibility. This was not
-done in this audit (no live Firestore available).
+`gcloud firestore indexes composite create` reproducibility.
+
+**What can and can't be determined statically (checked 2026-08-30,
+`app/persistence/firestore/repositories.py`)**: every `query()` method
+combines optional equality `.where()` filters with an optional
+`since`/`until` range filter, always finishing with `.order_by()` on the
+same timestamp field. The *fields involved* in each repository are fixed
+and listed below, but every filter is independently optional (`None`
+skips it), so which *combination* actually triggers Firestore's composite
+index requirement depends entirely on which filters real traffic
+supplies together — that part cannot be determined without running the
+actual queries.
+
+| Repository | Equality filter fields | Range + order field |
+|---|---|---|
+| `FirestoreSignalRepository` | `signal_type, source, service_name, environment, severity, status` | `observed_at` |
+| `FirestoreDetectionRepository` | `detection_type, domain, service_name, environment` | `detected_at` |
+| `FirestoreResolutionRepository` | `detection_id, remediation_strategy, risk` | `resolved_at` |
+| `FirestoreFeatureReviewRepository` | `status` | `created_at` |
+| `FirestoreRemediationVerificationRepository` | `outcome, status` | `verification_started_at` |
+
+Deliberately **no `firestore.indexes.json` was authored** from this
+table — enumerating every mathematically possible subset would create
+indexes for combinations that may never be queried (wasted
+index-maintenance cost) while still risking missing the one combination
+that matters, which is exactly what Firestore's own `FailedPrecondition`
+error tells you for free, with an exact console link. Not done in this
+pass (still no live Firestore query traffic to observe).
 
 ## 6. Pub/Sub setup
 
@@ -142,6 +200,28 @@ gcloud pubsub subscriptions update quipu-signals-sub \
   --dead-letter-topic=quipu-signals-dlq \
   --max-delivery-attempts=5
 ```
+
+**DLQ forwarding also requires IAM** — Pub/Sub's own service agent
+(`service-<PROJECT_NUMBER>@gcp-sa-pubsub.iam.gserviceaccount.com`, get
+the project number via `gcloud projects describe`) must be able to
+publish to the DLQ topic and pull from the source subscription. This step
+was missing from this document until the 2026-08-30 validation and is
+**not optional** — without it Pub/Sub silently cannot deliver to the DLQ:
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format="value(projectNumber)")
+PUBSUB_SA="service-${PROJECT_NUMBER}@gcp-sa-pubsub.iam.gserviceaccount.com"
+
+gcloud pubsub topics add-iam-policy-binding quipu-signals-dlq \
+  --member="serviceAccount:${PUBSUB_SA}" --role="roles/pubsub.publisher"
+gcloud pubsub subscriptions add-iam-policy-binding quipu-signals-sub \
+  --member="serviceAccount:${PUBSUB_SA}" --role="roles/pubsub.subscriber"
+```
+
+**Live state as of 2026-08-30** (`quipu-507109`): both topics exist,
+`quipu-signals-sub` has a 60s ack deadline and the DLQ policy above fully
+wired, and both IAM bindings above are in place and verified via
+`gcloud pubsub topics/subscriptions get-iam-policy`.
 
 ## 7. Agent Search (Discovery Engine) setup
 
@@ -171,28 +251,59 @@ instruction.
 ## 8. IAM / service accounts
 
 Two service accounts, least-privilege, no keys (ADC via attached
-identity only) — see `docs/hackathon/submission_readiness.md` §F for the
-full role-by-role justification.
+identity only).
 
 ```bash
 gcloud iam service-accounts create quipu-api-sa --display-name="Quipu Control Plane API"
 gcloud iam service-accounts create quipu-worker-sa --display-name="Quipu Pub/Sub Signal Worker"
 
-for ROLE in roles/datastore.user roles/aiplatform.user roles/discoveryengine.viewer \
-            roles/run.developer roles/iam.serviceAccountUser \
-            roles/monitoring.viewer roles/logging.viewer roles/logging.logWriter; do
+for ROLE in roles/datastore.user roles/aiplatform.user \
+            roles/run.developer \
+            roles/monitoring.viewer roles/logging.viewer; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:quipu-api-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role="$ROLE"
 done
 
-for ROLE in roles/pubsub.subscriber roles/datastore.user roles/aiplatform.user \
-            roles/discoveryengine.viewer roles/logging.logWriter; do
+for ROLE in roles/pubsub.subscriber roles/datastore.user roles/aiplatform.user; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:quipu-worker-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role="$ROLE"
 done
 ```
+
+**IAM audited against actual code on 2026-08-30 — three roles previously
+listed here were removed** after checking whether current code paths
+actually need them (not granted speculatively just because an earlier
+version of this document listed them):
+
+- `roles/iam.serviceAccountUser` (was on `quipu-api-sa`): this role is
+  needed only to *act as* another service account — e.g. attaching a
+  non-default SA to a Cloud Run service being deployed. Checked
+  `CloudRunDeployer.deploy()` (`app/core/cloud_run_client.py`): the
+  `run_v2.Service`/`RevisionTemplate`/`Container` it builds never sets a
+  `service_account` field, and no code anywhere under `app/` references
+  `service_account` or does any impersonation (verified by repo-wide
+  grep). `DeploymentAgent` therefore never needs to act as another
+  identity today. **Not granted.** If a future change makes
+  `deploy_cloud_run` pin a target service account, add this role back
+  then, scoped to that specific service account resource where possible.
+- `roles/logging.logWriter` (was on both service accounts): needed only
+  to call the Cloud Logging *write* API directly. Checked
+  `app/core/cloud_logging_client.py`: it only calls
+  `LoggingServiceV2AsyncClient`'s `ListLogEntries` (read path), used by
+  `MonitoringAgent` — covered by `roles/logging.viewer`, already granted.
+  Repo-wide grep for `logging.Client`/log-write calls found nothing.
+  Cloud Run itself captures container stdout/stderr into Cloud Logging
+  automatically, with no IAM grant required on the running service's
+  identity. **Not granted.**
+- `roles/discoveryengine.viewer` (was on both service accounts): Agent
+  Search (`app/knowledge/backends/google_search.py`) is real but not
+  wired into the default API container (`app/api/container.py` uses
+  `InMemoryRetrievalBackend`), and `discoveryengine.googleapis.com` isn't
+  even enabled on the project (see §3). **Not granted** until that
+  wiring exists and the API is enabled — add it at that point, not
+  before.
 
 Neither service account is `Owner`/`Editor`. Neither uses a downloaded
 JSON key — both are attached directly to their Cloud Run
@@ -201,6 +312,14 @@ service/worker-pool identity, and every Google client in the codebase
 `app/eventing/google_pubsub_client.py`) already constructs its client
 with no explicit credentials argument, which resolves to ADC
 automatically.
+
+**Live state as of 2026-08-30** (`quipu-507109`): both service accounts
+exist with exactly the reduced role sets above —
+`quipu-api-sa`: `aiplatform.user`, `datastore.user`, `logging.viewer`,
+`monitoring.viewer`, `run.developer`;
+`quipu-worker-sa`: `aiplatform.user`, `datastore.user`,
+`pubsub.subscriber`. No IAM changes were made to either account in this
+pass (only Pub/Sub-resource-level bindings for DLQ forwarding, §6).
 
 ## 9. Cloud Run deployment — the Control Plane API + UI
 
@@ -254,6 +373,15 @@ purpose-built for exactly this shape (a background process pulling from
 a queue, no inbound HTTP required):
 
 ```bash
+gcloud builds submit --tag "${REGION}-docker.pkg.dev/${PROJECT_ID}/quipu/worker:latest" \
+  --config=/dev/stdin <<'EOF'
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "Dockerfile.worker", "-t", "$_IMAGE", "."]
+images: ["$_IMAGE"]
+EOF
+# (or simply: docker build -f Dockerfile.worker -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/quipu/worker:latest" . && docker push ...)
+
 gcloud run worker-pools deploy quipu-worker \
   --image="${REGION}-docker.pkg.dev/${PROJECT_ID}/quipu/worker:latest" \
   --region="$REGION" \
@@ -263,9 +391,11 @@ gcloud run worker-pools deploy quipu-worker \
   --max-instances=1
 ```
 
-(This uses a separate worker image — same `requirements.txt`, entrypoint
-`CMD ["python", "-m", "app.eventing.worker_main"]` — not built in this
-audit; see "next actions" in submission readiness.)
+The worker image is built from `Dockerfile.worker` (repo root, added
+2026-08-30) — same `requirements.txt` as the API image, no UI build
+stage, entrypoint `CMD ["python", "-m", "app.eventing.worker_main"]`. It
+is independent of the root `Dockerfile` (API+UI); building one never
+touches the other. Not yet built or pushed as of this document.
 
 **B. Cloud Run Service with CPU always allocated** (fallback if worker
 pools aren't available): requires the **minimum additive adapter** this

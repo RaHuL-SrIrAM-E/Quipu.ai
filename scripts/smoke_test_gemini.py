@@ -18,7 +18,7 @@ import sys
 
 PROJECT = os.environ.get("GCP_PROJECT_ID", "quipu-507109")
 LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
 

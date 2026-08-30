@@ -4,10 +4,14 @@
 
 Wires the real Google Pub/Sub client, real Firestore-backed repositories,
 and the real DetectionProcessor/DetectingAgent behind the existing
-DetectionTrigger boundary — every component reused unchanged from the
-existing architecture (app/eventing/, app/detection/, app/agents/detecting.py).
-This module adds no business logic: it is construction/wiring plus signal
-handling for graceful shutdown, nothing else.
+DetectionTrigger boundary, plus the real DetectionActionProcessor/
+FeatureReviewService/IncidentResolutionAgent behind the ActionTrigger
+boundary one layer further — every component reused unchanged from the
+existing architecture (app/eventing/, app/detection/,
+app/agents/detecting.py, app/agents/incident_resolution.py,
+app/feature_review/). This module adds no business logic: it is
+construction/wiring plus signal handling for graceful shutdown, nothing
+else.
 
 Requires GCP_PROJECT_ID, PUBSUB_SIGNAL_SUBSCRIPTION, and Application
 Default Credentials to be configured (see .env.example) — this module is
@@ -18,17 +22,29 @@ no test-time Google dependency.
 import asyncio
 import signal
 
+from app.agent_runtime.gateways.artifacts import RepositoryArtifactGateway
 from app.agent_runtime.gateways.detections import RepositoryDetectionGateway
+from app.agent_runtime.gateways.resolutions import RepositoryResolutionGateway
 from app.agent_runtime.gateways.signals import RepositorySignalGateway
+from app.agents.incident_resolution import IncidentResolutionAgent
 from app.config import get_settings
 from app.core.observability import get_logger
+from app.detection.action_processor import DetectionActionProcessor
 from app.detection.processor import DetectionProcessor
 from app.detection.trigger import DetectionProcessorTrigger
 from app.eventing.google_pubsub_client import GooglePubSubClient
 from app.eventing.ingestion_service import SignalIngestionService
 from app.eventing.worker import SignalConsumerWorker
+from app.feature_review import FeatureReviewService
 from app.persistence.firestore.client import get_firestore_client
-from app.persistence.firestore.repositories import FirestoreDetectionRepository, FirestoreSignalRepository
+from app.persistence.firestore.repositories import (
+    FirestoreAgentExecutionRepository,
+    FirestoreArtifactRepository,
+    FirestoreDetectionRepository,
+    FirestoreFeatureReviewRepository,
+    FirestoreResolutionRepository,
+    FirestoreSignalRepository,
+)
 
 logger = get_logger("quipu.eventing.worker_main")
 
@@ -41,10 +57,29 @@ async def _run() -> None:
     firestore_client = get_firestore_client()
     signal_repo = FirestoreSignalRepository(firestore_client)
     detection_repo = FirestoreDetectionRepository(firestore_client)
+    resolution_repo = FirestoreResolutionRepository(firestore_client)
+    review_repo = FirestoreFeatureReviewRepository(firestore_client)
+    artifact_repo = FirestoreArtifactRepository(firestore_client)
+    execution_repo = FirestoreAgentExecutionRepository(firestore_client)
+
+    signal_gateway = RepositorySignalGateway(signal_repo)
+    detection_gateway = RepositoryDetectionGateway(detection_repo)
+
+    review_service = FeatureReviewService(review_repo, detection_gateway, signal_gateway)
+    action_processor = DetectionActionProcessor(
+        review_service=review_service,
+        incident_agent=IncidentResolutionAgent(),
+        signal_gateway=signal_gateway,
+        detection_gateway=detection_gateway,
+        artifact_gateway=RepositoryArtifactGateway(artifact_repo),
+        resolution_gateway=RepositoryResolutionGateway(resolution_repo),
+        execution_repo=execution_repo,
+    )
 
     processor = DetectionProcessor(
-        signal_gateway=RepositorySignalGateway(signal_repo),
-        detection_gateway=RepositoryDetectionGateway(detection_repo),
+        signal_gateway=signal_gateway,
+        detection_gateway=detection_gateway,
+        action_trigger=action_processor,
     )
     ingestion_service = SignalIngestionService(signal_repo, detection_trigger=DetectionProcessorTrigger(processor))
     consumer = GooglePubSubClient()

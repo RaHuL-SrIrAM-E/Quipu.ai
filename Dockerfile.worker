@@ -1,0 +1,17 @@
+# Production image for the Quipu Pub/Sub Signal Consumer Worker (see
+# docs/deployment/gcp.md "Worker deployment"). Runs ONLY
+# app.eventing.worker_main — a long-running asyncio loop with no HTTP
+# server, distinct from the Control Plane API/UI image built by the root
+# Dockerfile. Same requirements.txt as the API image; no UI build stage
+# since this process serves no HTTP traffic.
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app ./app
+
+CMD ["python", "-m", "app.eventing.worker_main"]

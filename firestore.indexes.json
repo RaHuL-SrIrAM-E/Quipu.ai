@@ -1,0 +1,29 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "signals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "signal_type", "order": "ASCENDING" },
+        { "fieldPath": "observed_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "detections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "domain", "order": "ASCENDING" },
+        { "fieldPath": "detected_at", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "collectionGroup": "artifacts",
+      "fieldPath": "artifact_id",
+      "indexes": [
+        { "order": "ASCENDING", "queryScope": "COLLECTION_GROUP" }
+      ]
+    }
+  ]
+}

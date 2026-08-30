@@ -228,16 +228,21 @@ below can be closed out without `gcloud`/Docker/GCP credentials, which
 remain unavailable in every environment this project has been audited
 from so far — see `docs/deployment/gcp_validation.md`.
 
-1. **Gemini model version** (§A) — ~~update `GEMINI_MODEL`~~ **DONE**:
-   default is now `gemini-3.5-flash`, centrally read by all 10 `LlmAgent`
-   sites. Still need to confirm this exact string is valid for the target
-   Vertex AI project/region with a live call — not done, no access.
+1. **Gemini model version** (§A) — ~~update `GEMINI_MODEL`~~ **DONE, live-
+   verified 2026-08-30**: default is `gemini-2.5-flash`, centrally read by
+   all 10 `LlmAgent` sites. `gemini-3.5-flash` (the earlier default) was
+   confirmed to return `404 NOT_FOUND` from live Vertex AI in
+   `quipu-507109`/`us-central1` — not available for this project/region.
+   `gemini-2.5-flash` and `gemini-2.5-pro` were both confirmed working via
+   a real `google.genai` Vertex AI call; `gemini-2.5-flash` is the current
+   default. See `docs/deployment/gcp_validation.md` for the full record.
 2. **Actual GCP deployment** (§C) — still nothing executed; a second
    attempt (this task) also found no `gcloud`/Docker/credentials and
    correctly halted rather than faking results.
-3. **`GOOGLE_GENAI_USE_VERTEXAI=true`** — ~~must be set~~ **DONE**: now
-   enforced in code (`app/config.py`), not just documented. Still not
-   exercised against a live Vertex AI call.
+3. **`GOOGLE_GENAI_USE_VERTEXAI=true`** — ~~must be set~~ **DONE, live-
+   verified 2026-08-30**: enforced in code (`app/config.py`) and exercised
+   against a real Vertex AI call in `quipu-507109`/`us-central1` (item 1
+   above) — no longer merely documented or code-enforced-but-untested.
 4. **Firestore composite indexes** (§C) — analyzed this task (every
    `query()` method's filter/order-by shape is now documented in
    `docs/deployment/gcp_validation.md`); deliberately not guessed at in a
@@ -311,21 +316,28 @@ Safe to state, because verified in this audit:
   'resolved.'"
 - "979 backend tests and 30 frontend tests, all passing, cover this
   architecture."
-- "Quipu is configured to use Gemini 3.5 (`gemini-3.5-flash`) via Vertex
-  AI/ADC by default — enforced in code, not just documented."
+- "Quipu is configured to use Gemini 2.5 (`gemini-2.5-flash`) via Vertex
+  AI/ADC by default — enforced in code, and live-verified with a real
+  Vertex AI call against `quipu-507109`/`us-central1` on 2026-08-30
+  (`gemini-3.5-flash` was tried first and confirmed unavailable for this
+  project/region)."
 
 ## J. Claims we should NOT make (yet)
 
 - "Quipu is deployed and running on Google Cloud" — **still not true**;
   a second attempt to deploy (this update) also found no
   `gcloud`/Docker/credentials available and made no live resource.
-- "Quipu uses Gemini 3.5 **in production**" or "we verified Gemini 3.5" —
-  the *configuration* is now correct (§G item 1), but no live call has
-  been executed against it. Say "configured for Gemini 3.5" or "code-level
-  fix applied," not "verified" or "in production."
-- "Quipu uses Vertex AI" — the *code* now enforces this by default (§G
-  item 3), but it has never been exercised against a live call. Say
-  "configured to use Vertex AI/ADC," not "verified against Vertex AI."
+- "Quipu uses Gemini 3.5 in production" — **false and should not be
+  claimed at all**: `gemini-3.5-flash` was live-tested and confirmed
+  unavailable (`404 NOT_FOUND`) in `quipu-507109`/`us-central1` (§G
+  item 1). The correct claim is "Quipu is configured to use Gemini 2.5
+  (`gemini-2.5-flash`) via Vertex AI, live-verified against the target
+  project" — this one *is* now backed by a real call, not just code.
+- "Quipu uses Vertex AI" — this is now backed by a live-verified call
+  (§G item 3), not just code enforcement. Safe to say "configured to use
+  Vertex AI/ADC, live-verified against `quipu-507109`" — still distinct
+  from "deployed in production," since no Cloud Run service is running
+  yet (§C).
 - "Quipu uses Agent Search in production" — the code is real, but the
   live API's default container does not wire it in (§B) — say "Agent
   Search integration is implemented and tested" rather than "in
