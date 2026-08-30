@@ -14,6 +14,7 @@ either.
 """
 
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.agent_runtime.context import AgentContext
@@ -358,6 +359,63 @@ class OrchestrationService:
             current = await self._workflow_repo.get(workflow.workflow_id)
             if current is not None and resolution_id in current.metadata.get("remediation_resolution_ids", []):
                 return current
+            raise
+
+    async def retry_failed_workflow(self, workflow_id: str) -> WorkflowState:
+        """Reopens a FAILED WorkflowState in place so it can be re-executed
+        from exactly the stage it failed at — the same workflow_id, same
+        artifact_ids/execution_ids, same FeatureReview.workflow_id pointer.
+        Never creates a second WorkflowState (FeatureReview.workflow_id is
+        a single idempotency pointer, untouched here — see
+        app/domain/feature_review.py).
+
+        Structurally the same "reopen, don't recreate" mechanism
+        start_remediation_from_resolution already uses for a COMPLETED
+        workflow, just simpler: there is no strategy/target-agent to
+        derive here — the resume stage is exactly workflow.current_stage,
+        already correctly recorded by _fail_workflow, so current_stage is
+        never modified. artifact_ids/execution_ids/active_decision_id/
+        active_incident_ids are all left exactly as they are — Planning
+        and Architecture's existing artifacts are already there, and
+        execute_next_step()'s existing _resolve_input_artifact_id/
+        _reconcile_stage machinery (unchanged) picks them up automatically
+        the next time it runs. If the workspace this workflow was using
+        was already reclaimed (WorkspaceProvisioningError/cleanup on
+        FAILED), _ensure_workspace() — also unchanged — transparently
+        re-provisions a fresh one on the next execute_next_step() call;
+        this method does not touch the workspace at all.
+
+        Concurrency-safe via WorkflowRepository.update_if_version: of two
+        simultaneous retries, only one wins the version-checked write; the
+        loser re-reads and returns the winner's now-PENDING state instead
+        of erroring or retrying itself — exactly one WorkflowState/
+        workflow_id ever exists, and retrying never creates a duplicate
+        artifact or execution on its own (only running the resumed stage
+        does that, same as any other execute_next_step() call)."""
+        workflow = await self._get_workflow_or_raise(workflow_id)
+
+        if workflow.status != WorkflowStatus.FAILED:
+            raise OrchestrationError(f"workflow '{workflow_id}' is not FAILED (status='{workflow.status.value}') — cannot retry")
+
+        retry_count = workflow.metadata.get("retry_count", 0) + 1
+        updated = workflow.model_copy(
+            update={
+                "status": WorkflowStatus.PENDING,
+                "metadata": {
+                    **workflow.metadata,
+                    "retry_count": retry_count,
+                    "last_retried_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+        )
+        try:
+            result = await self._workflow_repo.update_if_version(workflow_id, workflow.version, updated)
+            logger.info("workflow %s retried at stage %s (retry_count=%d)", workflow_id, workflow.current_stage.value, retry_count)
+            return result
+        except VersionConflictError:
+            current = await self._get_workflow_or_raise(workflow_id)
+            if current.status == WorkflowStatus.PENDING:
+                return current  # someone else's concurrent retry already won — idempotent re-entry
             raise
 
     async def execute_next_step(self, workflow_id: str) -> WorkflowState:

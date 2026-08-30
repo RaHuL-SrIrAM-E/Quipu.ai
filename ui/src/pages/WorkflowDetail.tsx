@@ -20,6 +20,7 @@ export function WorkflowDetail() {
   const decisions = useApiData(() => api.listWorkflowDecisions(id), [id], 8_000);
 
   const isActive = workflow.data ? !["completed", "failed", "cancelled", "escalated"].includes(workflow.data.status) : false;
+  const isFailed = workflow.data?.status === "failed";
 
   return (
     <>
@@ -57,6 +58,20 @@ export function WorkflowDetail() {
                       }}
                     />
                   </div>
+                ) : isFailed ? (
+                  <CommandButton
+                    label="↻ Retry"
+                    confirmLabel="Retry workflow"
+                    description="This will reopen the workflow at the stage it failed on, so it can be run again — existing successful artifacts (Plan, Architecture, etc.) are preserved. This does NOT execute anything itself; use Run Next Step or Run Workflow afterward to actually retry the failed stage."
+                    tone="primary"
+                    onRun={() => api.retryWorkflow(id)}
+                    onSuccess={() => {
+                      workflow.refresh();
+                      artifacts.refresh();
+                      executions.refresh();
+                      decisions.refresh();
+                    }}
+                  />
                 ) : null
               }
             />

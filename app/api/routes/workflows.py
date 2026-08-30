@@ -140,3 +140,26 @@ async def step_workflow(workflow_id: str, container: ApiContainer = Depends(get_
         (time.perf_counter() - started) * 1000,
     )
     return WorkflowDetail.from_domain(workflow)
+
+
+@router.post("/{workflow_id}/retry", response_model=WorkflowDetail)
+async def retry_workflow(workflow_id: str, container: ApiContainer = Depends(get_container)) -> WorkflowDetail:
+    """Reopens a FAILED workflow so it can be re-executed from the stage it
+    failed at — delegates entirely to OrchestrationService.
+    retry_failed_workflow(), same "route contains no business logic"
+    invariant as /run, /step, /remediate, /start-workflow. No request
+    body: there is nothing for a caller to supply, the resume stage is
+    exactly the workflow's own current_stage. Retrying does NOT execute
+    anything itself — a separate, explicit /run or /step call is still
+    required, same as calling start_workflow_from_review()/
+    start_remediation_from_resolution() never auto-executes either."""
+    started = time.perf_counter()
+    workflow = await container.orchestration.retry_failed_workflow(workflow_id)
+    logger.info(
+        "api.command op=retry_workflow workflow_id=%s stage=%s status=%s duration_ms=%.1f",
+        workflow_id,
+        workflow.current_stage.value,
+        workflow.status.value,
+        (time.perf_counter() - started) * 1000,
+    )
+    return WorkflowDetail.from_domain(workflow)

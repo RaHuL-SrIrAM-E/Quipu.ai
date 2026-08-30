@@ -863,3 +863,46 @@ def test_run_workflow_route_never_invokes_an_agent_directly():
 async def test_run_workflow_not_found(client):
     r = client.post("/workflows/does-not-exist/run")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Workflow retry — POST /workflows/{workflow_id}/retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_workflow_delegates_to_orchestrator(client, container, monkeypatch):
+    calls = []
+
+    async def _fake_retry(workflow_id):
+        calls.append(workflow_id)
+        return await seed_workflow(container)
+
+    monkeypatch.setattr(container.orchestration, "retry_failed_workflow", _fake_retry)
+
+    r = client.post("/workflows/some-workflow-id/retry")
+    assert r.status_code == 200
+    assert calls == ["some-workflow-id"]
+    # correct response model — WorkflowDetail fields, not WorkflowSummary's
+    body = r.json()
+    assert "ticket_description" in body
+    assert "current_stage" in body
+
+
+@pytest.mark.asyncio
+async def test_retry_workflow_not_found_returns_business_rule_violation(client):
+    # /retry follows the /remediate and /start-workflow convention (no
+    # pre-check route-level 404 — the service itself raises
+    # OrchestrationError, mapped globally to 422), NOT /run's separate
+    # _get_workflow_or_404 pre-check.
+    r = client.post("/workflows/does-not-exist/retry")
+    assert r.status_code == 422
+    assert r.json()["error"] == "business_rule_violation"
+
+
+@pytest.mark.asyncio
+async def test_retry_workflow_rejects_non_failed_workflow(client, container):
+    workflow = await seed_workflow(container, status=WorkflowStatus.PENDING)
+    r = client.post(f"/workflows/{workflow.workflow_id}/retry")
+    assert r.status_code == 422
+    assert r.json()["error"] == "business_rule_violation"
