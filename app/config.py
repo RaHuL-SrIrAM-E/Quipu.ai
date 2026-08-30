@@ -266,6 +266,23 @@ class Settings(BaseSettings):
     # on llm_call_timeout_seconds, unaffected by this setting.
     codegen_llm_call_timeout_seconds: float = 120.0
 
+    # TestingAgent's own budget — same rationale as codegen_llm_call_
+    # timeout_seconds above. Its ADK conversation wraps a run_tests tool
+    # call that already has its own test_execution_timeout_seconds (120.0,
+    # unchanged) — nesting that inside the shared 60s budget made the
+    # inner 120s bound unreachable in practice, since the outer wrapper
+    # would fire first on any real test run taking more than ~60s. 150.0
+    # = test_execution_timeout_seconds + 25% headroom for the LLM's own
+    # turns (invoking run_tests, interpreting the result).
+    testing_llm_call_timeout_seconds: float = 150.0
+
+    # DeploymentAgent's own budget — same rationale again. Its ADK
+    # conversation wraps a deploy_cloud_run tool call bounded by
+    # cloud_run_deploy_timeout_seconds (300.0, unchanged) — the same
+    # nesting problem, at larger scale. 360.0 = cloud_run_deploy_timeout_
+    # seconds + 20% headroom for the LLM's own turns.
+    deployment_llm_call_timeout_seconds: float = 360.0
+
     jira_retry_max_attempts: int = 3
     jira_retry_base_delay_seconds: float = 0.5
     jira_circuit_breaker_failure_threshold: int = 5

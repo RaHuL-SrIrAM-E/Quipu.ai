@@ -282,7 +282,7 @@ class TestingAgent(QuipuAgent):
                     if event.is_final_response() and event.content and event.content.parts:
                         final_text = event.content.parts[0].text
 
-            await with_timeout(_consume_llm_response(), settings.llm_call_timeout_seconds, operation="testing_agent_llm_call")
+            await with_timeout(_consume_llm_response(), settings.testing_llm_call_timeout_seconds, operation="testing_agent_llm_call")
         except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a result.
             logger.exception("testing agent LLM execution failed")
             return await _fail("TESTING_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)

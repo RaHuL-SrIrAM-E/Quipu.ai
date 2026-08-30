@@ -6,6 +6,7 @@ safety boundary and evidence-first behavior must be exercised for real, not
 mocked away.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -257,6 +258,87 @@ async def test_failure_lifecycle(monkeypatch, tmp_path: Path):
     assert agent.status == AgentStatus.COMPLETED
     assert output.status == WorkflowStatus.FAILED
     assert output.errors[0].code == "TESTING_LLM_FAILURE"
+
+
+# ---- Timeout budget (testing_llm_call_timeout_seconds, separate from the
+# shared llm_call_timeout_seconds Planning/Architecture use) --------------
+
+
+def make_slow_fake_runner(delay_seconds: float, final_text: str):
+    """A fake ADK runner whose single turn takes real wall-clock time
+    before yielding — the only way to genuinely exercise with_timeout's
+    asyncio.wait_for bound rather than a canned instantaneous response."""
+
+    async def _events(**kwargs):
+        await asyncio.sleep(delay_seconds)
+        yield _FakeEvent(final_text)
+
+    class _FakeRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _FakeSessionService()
+
+        def run_async(self, **kwargs):
+            return _events(**kwargs)
+
+    return _FakeRunner
+
+
+@pytest.mark.asyncio
+async def test_testing_timeout_uses_dedicated_setting_not_shared(monkeypatch, tmp_path: Path):
+    """testing_llm_call_timeout_seconds governs Testing's timeout even when
+    the shared llm_call_timeout_seconds is left large — proving Testing
+    reads its own setting, not the one Planning/Architecture use.
+
+    Patches app.agents.testing's own module-level `settings` object
+    directly, NOT a fresh get_settings() call — other test modules call
+    get_settings.cache_clear(), which would otherwise return a different
+    Settings instance than the one testing.py captured at import time and
+    silently no-op this test's monkeypatch when run as part of the full
+    suite (see tests/test_codegen_agent.py for the identical issue)."""
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(testing_module.settings, "llm_call_timeout_seconds", 60.0)
+    monkeypatch.setattr(
+        "app.agents.testing.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.5, final_text=json.dumps(VALID_TESTING_PASS))
+    )
+
+    agent = TestingAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "TESTING_LLM_FAILURE"
+    assert "did not complete within 0.05" in output.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_testing_ignores_shared_llm_call_timeout(monkeypatch, tmp_path: Path):
+    """The inverse: shrinking the SHARED setting alone must not affect
+    Testing — its own dedicated setting is what's actually consulted."""
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(testing_module.settings, "testing_llm_call_timeout_seconds", 5.0)
+    monkeypatch.setattr(
+        "app.agents.testing.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.2, final_text=json.dumps(VALID_TESTING_PASS))
+    )
+
+    agent = TestingAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    # A slow-but-within-budget response with no run_tests call still fails
+    # (evidence-first — NO_TESTS_EXECUTED), but it must NOT fail on the
+    # timeout: proves the dedicated setting, not the shrunk shared one, is
+    # what governed how long Testing was allowed to run.
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "NO_TESTS_EXECUTED"
+
+
+@pytest.mark.asyncio
+async def test_testing_dedicated_timeout_defaults_to_150_seconds():
+    from app.config import get_settings
+
+    assert get_settings().testing_llm_call_timeout_seconds == 150.0
 
 
 # ---- Input artifact -----------------------------------------------------------

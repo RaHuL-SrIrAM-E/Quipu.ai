@@ -8,6 +8,7 @@ call, faked here via an injected deployer object). Security tests prove the
 tool's own validation boundary directly.
 """
 
+import asyncio
 import inspect
 import json
 from datetime import datetime, timezone
@@ -283,6 +284,94 @@ async def test_failure_lifecycle(monkeypatch):
     assert agent.status == AgentStatus.COMPLETED  # handled failure, not an uncaught exception
     assert output.status == WorkflowStatus.FAILED
     assert output.errors[0].code == "DEPLOYMENT_LLM_FAILURE"
+
+
+# ---- Timeout budget (deployment_llm_call_timeout_seconds, separate from
+# the shared llm_call_timeout_seconds Planning/Architecture use) ----------
+
+
+def make_slow_fake_runner(delay_seconds: float, final_text: str):
+    """A fake ADK runner whose single turn takes real wall-clock time
+    before yielding — the only way to genuinely exercise with_timeout's
+    asyncio.wait_for bound rather than a canned instantaneous response."""
+
+    async def _events(**kwargs):
+        await asyncio.sleep(delay_seconds)
+        yield _FakeEvent(final_text)
+
+    class _FakeRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _CapturingSessionService()
+
+        def run_async(self, **kwargs):
+            return _events(**kwargs)
+
+    return _FakeRunner
+
+
+@pytest.mark.asyncio
+async def test_deployment_timeout_uses_dedicated_setting_not_shared(monkeypatch):
+    """deployment_llm_call_timeout_seconds governs Deployment's timeout
+    even when the shared llm_call_timeout_seconds is left large — proving
+    Deployment reads its own setting, not the one Planning/Architecture use.
+
+    Patches app.agents.deployment's own module-level `settings` object
+    directly, NOT a fresh get_settings() call — other test modules call
+    get_settings.cache_clear(), which would otherwise return a different
+    Settings instance than the one deployment.py captured at import time
+    and silently no-op this test's monkeypatch when run as part of the
+    full suite (see tests/test_codegen_agent.py for the identical issue).
+    Note this is independent of patch_cloud_run_config, which only
+    monkeypatches the `get_settings` function reference this module also
+    calls fresh elsewhere (the CLOUD_RUN_IMAGE_REGISTRY check) — the
+    module-level `settings` object used for the timeout is untouched by
+    that patch."""
+    patch_cloud_run_config(monkeypatch)
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(deployment_module.settings, "llm_call_timeout_seconds", 60.0)
+    monkeypatch.setattr(
+        "app.agents.deployment.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.5, final_text=json.dumps(VALID_DEPLOYMENT))
+    )
+
+    agent = DeploymentAgent()
+    output = await agent.execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "DEPLOYMENT_LLM_FAILURE"
+    assert "did not complete within 0.05" in output.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_deployment_ignores_shared_llm_call_timeout(monkeypatch):
+    """The inverse: shrinking the SHARED setting alone must not affect
+    Deployment — its own dedicated setting is what's actually consulted."""
+    patch_cloud_run_config(monkeypatch)
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(deployment_module.settings, "deployment_llm_call_timeout_seconds", 5.0)
+    monkeypatch.setattr(
+        "app.agents.deployment.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.2, final_text=json.dumps(VALID_DEPLOYMENT))
+    )
+
+    agent = DeploymentAgent()
+    output = await agent.execute(make_agent_input(), make_context_with_code())
+
+    # A slow-but-within-budget response with no deploy_cloud_run call
+    # still fails (evidence-first — NO_DEPLOYMENT_ATTEMPTED), but it must
+    # NOT fail on the timeout: proves the dedicated setting, not the
+    # shrunk shared one, governed how long Deployment was allowed to run.
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "NO_DEPLOYMENT_ATTEMPTED"
+
+
+@pytest.mark.asyncio
+async def test_deployment_dedicated_timeout_defaults_to_360_seconds():
+    from app.config import get_settings
+
+    assert get_settings().deployment_llm_call_timeout_seconds == 360.0
 
 
 # ---- Input --------------------------------------------------------------------
