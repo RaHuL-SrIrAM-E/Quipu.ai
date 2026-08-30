@@ -196,6 +196,21 @@ def patch_planning(monkeypatch, plan=None):
     monkeypatch.setattr("app.agents.planning.JiraClient", FakeJiraClient)
 
 
+@pytest.fixture(autouse=True)
+def _configure_workspace_provisioning(monkeypatch, tmp_path):
+    """start_workflow_from_review() never carries a workspace_path, so any
+    test here that drives a workflow into Planning now needs
+    OrchestrationService._ensure_workspace() to resolve a repo_url and
+    clone — give it a resolvable config and a fake, instant clone_repo
+    (no real git/network call in a unit test) rather than requiring every
+    test to set this up individually. A no-op for every test that never
+    reaches execute_next_step()."""
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "default_repo_url", "https://example.invalid/repo.git")
+    monkeypatch.setattr("app.orchestration.service.clone_repo", lambda repo_url, run_id, ref=None: tmp_path)
+
+
 # ---- Workflow creation from an approved review ---------------------------------
 
 

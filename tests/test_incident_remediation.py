@@ -1063,10 +1063,17 @@ async def test_existing_feature_review_workflow_unaffected(monkeypatch, workspac
     )
     workflow = await orchestration_with_reviews.start_workflow_from_review(approved.review_id)
     assert workflow.current_stage == WorkflowStage.PLANNING
-    # Not carrying workspace_path (unrelated to this level — Level 3.5's
-    # start_workflow_from_review never took one), so only Planning (which
-    # doesn't need a checked-out repo) is exercised here; the point of this
-    # regression test is that Level 3.6 didn't disturb this entry point.
+    # start_workflow_from_review() never carries a workspace_path, so
+    # OrchestrationService._ensure_workspace() must provision one before
+    # Planning can run — same repository-config/clone_repo seam every
+    # other workspace-requiring stage in the codebase now goes through.
+    # The point of this regression test remains: Level 3.6 didn't disturb
+    # this entry point.
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "default_repo_url", "https://example.invalid/repo.git")
+    monkeypatch.setattr("app.orchestration.service.clone_repo", lambda repo_url, run_id, ref=None: Path(workspace))
+
     result = await orchestration_with_reviews.execute_next_step(workflow.workflow_id)
     assert result.current_stage == WorkflowStage.ARCHITECTURE
     assert result.status == WorkflowStatus.PENDING

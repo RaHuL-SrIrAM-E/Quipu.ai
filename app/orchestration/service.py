@@ -14,6 +14,7 @@ either.
 """
 
 import uuid
+from pathlib import Path
 
 from app.agent_runtime.context import AgentContext
 from app.agent_runtime.gateways.artifacts import RepositoryArtifactGateway
@@ -23,6 +24,7 @@ from app.agent_runtime.registry import AgentNotFoundError, AgentRegistry
 from app.agents.incident_resolution import STRATEGY_TARGET_AGENT
 from app.config import get_settings
 from app.core.observability import get_logger
+from app.core.repo import RepoCloneError, cleanup_workspace, clone_repo
 from app.domain import (
     AgentInput,
     ArtifactType,
@@ -51,6 +53,7 @@ from app.orchestration.errors import (
     OrchestrationError,
     RetryLimitExceededError,
     UnknownAgentError,
+    WorkspaceProvisioningError,
 )
 from app.orchestration.transitions import (
     STAGE_INPUT_ARTIFACT_TYPE,
@@ -71,6 +74,14 @@ from app.persistence.repositories.workflow import WorkflowRepository
 logger = get_logger("quipu.orchestration.service")
 
 _TERMINAL_STATUSES = {WorkflowStatus.COMPLETED, WorkflowStatus.ESCALATED, WorkflowStatus.CANCELLED, WorkflowStatus.FAILED}
+
+# Only these stages actually read AgentInput.context["workspace_path"]
+# (CodegenAgent/TestingAgent hard-require it; ArchitectureAgent uses it
+# only if present; PlanningAgent's repo tools need it) — DeploymentAgent
+# never references workspace_path at all (it only takes an image_tag), so
+# provisioning a workspace for that stage would be pure waste and out of
+# scope for this change (see the separate build/push/image_tag gap).
+_STAGES_REQUIRING_WORKSPACE = {WorkflowStage.PLANNING, WorkflowStage.ARCHITECTURE, WorkflowStage.CODEGEN, WorkflowStage.TESTING}
 
 
 class OrchestrationService:
@@ -350,6 +361,17 @@ class OrchestrationService:
             raise
 
     async def execute_next_step(self, workflow_id: str) -> WorkflowState:
+        """Runs exactly one stage forward (delegating to _run_next_step),
+        then reclaims this workflow's local workspace the moment it reaches
+        a terminal status — a single choke point that covers every exit
+        path _run_next_step has (fail, complete, escalate), rather than
+        duplicating a cleanup call at each one."""
+        result = await self._run_next_step(workflow_id)
+        if result.status in _TERMINAL_STATUSES:
+            await self._maybe_cleanup_workspace(result.workflow_id)
+        return result
+
+    async def _run_next_step(self, workflow_id: str) -> WorkflowState:
         """Runs exactly one stage forward, or reconciles already-completed
         durable evidence instead of re-running it. Safe to call repeatedly —
         this IS the resume/recovery mechanism (see resume_workflow)."""
@@ -371,6 +393,16 @@ class OrchestrationService:
             quipu_agent = self._registry.get(agent_id)
         except AgentNotFoundError as exc:
             raise UnknownAgentError(agent_id) from exc
+
+        if stage in _STAGES_REQUIRING_WORKSPACE:
+            try:
+                await self._ensure_workspace(workflow)
+            except WorkspaceProvisioningError as exc:
+                return await self._fail_workflow(workflow, str(exc))
+            # _ensure_workspace may have persisted a new workspace_path
+            # (version bump) — re-read so _build_agent_input sees it and
+            # the RUNNING transition below uses the current version.
+            workflow = await self._get_workflow_or_raise(workflow_id)
 
         input_artifact_id = await self._resolve_input_artifact_id(workflow, stage)
         execution_id = str(uuid.uuid4())
@@ -466,6 +498,75 @@ class OrchestrationService:
             if artifact is not None and artifact.artifact_type == expected_type:
                 return artifact_id
         return None
+
+    async def _ensure_workspace(self, workflow: WorkflowState) -> str:
+        """Resolves a repo_url/ref for `workflow`, ensures a real
+        checked-out workspace exists for it on THIS instance's local disk,
+        and persists the result into workflow.metadata["workspace_path"]
+        via the existing optimistic-concurrency update path — the same
+        mechanism every other WorkflowState mutation in this service uses,
+        not a new persistence path.
+
+        Resolution order (never inferred from Jira/DetectionResult/Signal —
+        none of those carry repository identity): a per-Ticket override
+        (workflow.ticket.metadata["repo_url"]/["repo_ref"]), else
+        Settings.default_repo_url/default_repo_ref. Raises
+        WorkspaceProvisioningError — never lets a workspace-requiring stage
+        start silently without one — when no repo_url resolves at all, or
+        the actual `git clone` (app.core.repo.clone_repo) fails.
+
+        Isolated per workflow_id: clone_repo(repo_url, workflow.workflow_id,
+        ...) namespaces into <workspace_root>/<workflow_id>, never a shared
+        directory, so concurrent workflows on the same instance can never
+        collide. Reuses an existing workspace_path as long as it still
+        exists as a real directory on THIS instance's disk — checked
+        FIRST, before any repo_url resolution, so a workflow that already
+        has a valid workspace (e.g. one supplied directly to
+        start_workflow(), the way tests/demo scenarios already do) never
+        needs repository configuration at all. Cloud Run's filesystem is
+        ephemeral, so a workflow resumed on a different instance (e.g. a
+        later /step call) transparently re-clones rather than trusting a
+        stale path, at the cost of losing any uncommitted in-workspace
+        changes from the prior instance. /run drives an entire workflow to
+        completion within one synchronous request on one instance, so this
+        only matters for /step-by-/step callers — a known, accepted
+        limitation for this hackathon's scope, not something this change
+        claims to solve."""
+        existing_path = workflow.metadata.get("workspace_path")
+        if existing_path and Path(existing_path).is_dir():
+            return existing_path
+
+        settings = get_settings()
+        repo_url = workflow.ticket.metadata.get("repo_url") or settings.default_repo_url
+        if not repo_url:
+            raise WorkspaceProvisioningError(
+                f"no repository configured for workflow '{workflow.workflow_id}' — set Ticket.metadata['repo_url'] "
+                "or Settings.default_repo_url before Planning/Architecture/Codegen/Testing can run"
+            )
+        ref = workflow.ticket.metadata.get("repo_ref") or settings.default_repo_ref
+
+        try:
+            workspace_path = str(clone_repo(repo_url, workflow.workflow_id, ref=ref))
+        except RepoCloneError as exc:
+            raise WorkspaceProvisioningError(
+                f"failed to provision a workspace for workflow '{workflow.workflow_id}': {exc}"
+            ) from exc
+
+        updated = workflow.model_copy(update={"metadata": {**workflow.metadata, "workspace_path": workspace_path}})
+        await self._workflow_repo.update_if_version(workflow.workflow_id, workflow.version, updated)
+        logger.info("workflow %s: workspace provisioned at %s", workflow.workflow_id, workspace_path)
+        return workspace_path
+
+    async def _maybe_cleanup_workspace(self, workflow_id: str) -> None:
+        """Reclaims a terminal workflow's local workspace — never its
+        durable Firestore artifacts, which live entirely independently in
+        ArtifactRepository. Gated by Settings.workspace_cleanup_enabled so
+        a debugging session can temporarily disable reclamation to inspect
+        a failed run's checked-out workspace; leave enabled otherwise, since
+        ephemeral Cloud Run disk is not a place to accumulate workspaces."""
+        if not get_settings().workspace_cleanup_enabled:
+            return
+        cleanup_workspace(workflow_id)
 
     def _build_agent_input(self, workflow: WorkflowState, agent_id: str, input_artifact_id: str | None, execution_id: str) -> AgentInput:
         context: dict = {}

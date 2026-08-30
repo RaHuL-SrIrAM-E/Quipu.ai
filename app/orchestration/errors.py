@@ -30,3 +30,12 @@ class RetryLimitExceededError(InvalidTransitionError):
         self.stage = stage
         self.limit = limit
         super().__init__(f"retry limit ({limit}) exceeded for stage '{stage}'")
+
+
+class WorkspaceProvisioningError(OrchestrationError):
+    """Raised by OrchestrationService._ensure_workspace when a stage that
+    needs a checked-out repository has no repo_url it can resolve (no
+    Ticket.metadata override and no Settings.default_repo_url), or the
+    actual `git clone` fails. execute_next_step catches this and fails the
+    workflow deterministically via _fail_workflow — Planning/Architecture/
+    Codegen/Testing must never start without a real, resolvable workspace."""

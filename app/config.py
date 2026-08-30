@@ -35,6 +35,33 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./quipu.db"
     workspace_root: str = "./.quipu_workspaces"
 
+    # The single target repository Planning/Architecture/Codegen/Testing check
+    # out into a per-workflow workspace (app.orchestration.service.
+    # OrchestrationService._ensure_workspace, app.core.repo.clone_repo). A
+    # Ticket may override either via its own metadata (repo_url/repo_ref) —
+    # see _ensure_workspace — but there is no multi-repo domain model here;
+    # this is deliberately the smallest config for a single-target-repo
+    # deployment, not a repository registry. default_repo_ref is optional
+    # (None clones the repo's default branch).
+    default_repo_url: str | None = None
+    default_repo_ref: str | None = None
+
+    # A fine-scoped Git hosting access token (e.g. a GitHub fine-grained PAT
+    # or GitHub App installation token), sourced from Secret Manager via a
+    # Cloud Run env var — same operational pattern as JIRA_API_TOKEN below.
+    # Never embedded in a clone URL or written to .git/config — see
+    # app.core.repo.clone_repo's use of it via short-lived, process-scoped
+    # git config (GIT_CONFIG_* env vars passed only to the git subprocess),
+    # never persisted to disk. None is valid for a public repo.
+    git_access_token: str | None = None
+
+    # Lets a debugging session inspect a failed workflow's checked-out
+    # workspace after the fact instead of it being reclaimed the moment the
+    # workflow reaches a terminal status. Never disable this in normal
+    # operation — ephemeral Cloud Run disk is not a place to accumulate
+    # workspaces indefinitely.
+    workspace_cleanup_enabled: bool = True
+
     gcp_project_id: str | None = None
     gcp_location: str = "us-central1"
     # The one centralized model id every LlmAgent construction site reads
