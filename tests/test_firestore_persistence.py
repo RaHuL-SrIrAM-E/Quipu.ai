@@ -14,6 +14,8 @@ from app.persistence.firestore.repositories import (
     FirestoreArtifactRepository,
     FirestoreDecisionRepository,
     FirestoreWorkflowRepository,
+    _update_feature_review_txn,
+    _update_remediation_verification_txn,
     _update_workflow_txn,
 )
 from app.persistence.serialization import to_firestore_dict
@@ -38,7 +40,7 @@ class _FakeDocRef:
         self._path = path
         self.id = path[-1]
 
-    async def get(self):
+    async def get(self, transaction=None):
         data = self._store.get(self._path)
         return _FakeSnapshot(dict(data) if data is not None else None, exists=data is not None, doc_id=self.id)
 
@@ -69,12 +71,26 @@ class _FakeCollectionRef:
 
 
 class _FakeTransaction:
+    """Only `set()` is exercised by _update_*_txn — the reads go through
+    AsyncDocumentReference.get(transaction=...) instead (see doc_ref.get()
+    above, which accepts and ignores a `transaction` kwarg, same as the
+    real AsyncDocumentReference.get()).
+
+    Deliberately does NOT implement a `get()` method: in the installed
+    google-cloud-firestore (2.29.0), AsyncTransaction.get() for a single
+    AsyncDocumentReference internally does `await self._client.get_all(...)`,
+    but AsyncClient.get_all() is itself an async-generator function, so
+    `await transaction.get(doc_ref)` always raises `TypeError: object
+    async_generator can't be used in 'await' expression` (and the
+    un-awaited form raises a different TypeError) — verified against a
+    real Firestore project, not just read from source. There is no
+    working calling convention for `transaction.get(doc_ref)` in this SDK
+    version, so a fake that made one up (in either direction) would once
+    again mask a real bug instead of catching it — which is exactly what
+    the previous version of this fake did."""
+
     def __init__(self, store):
         self._store = store
-
-    async def get(self, doc_ref):
-        snapshot = await doc_ref.get()
-        yield snapshot
 
     def set(self, doc_ref, data, merge=False):
         self._store[doc_ref._path] = dict(data)
@@ -218,6 +234,80 @@ async def test_update_workflow_txn_missing_workflow():
     transaction = client.transaction()
     with pytest.raises(EntityNotFoundError):
         await _update_workflow_txn(transaction, doc_ref, 1, {"status": "running"})
+
+
+# Same three cases for _update_feature_review_txn/_update_remediation_verification_txn
+# — regression coverage for the "async for candidate in transaction.get(doc_ref)"
+# bug (missing `await`), which _FakeTransaction.get() above was previously
+# shaped to mask entirely (see its docstring).
+
+
+@pytest.mark.asyncio
+async def test_update_feature_review_txn_logic_directly():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("feature_reviews").document("rev-1")
+    await doc_ref.set({"version": 1, "status": "pending"})
+
+    transaction = client.transaction()
+    new_version = await _update_feature_review_txn(transaction, doc_ref, 1, {"status": "approved"})
+    assert new_version == 2
+    stored = await doc_ref.get()
+    assert stored.to_dict()["version"] == 2
+    assert stored.to_dict()["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_update_feature_review_txn_version_conflict():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("feature_reviews").document("rev-1")
+    await doc_ref.set({"version": 3, "status": "pending"})
+
+    transaction = client.transaction()
+    with pytest.raises(VersionConflictError):
+        await _update_feature_review_txn(transaction, doc_ref, 1, {"status": "approved"})
+
+
+@pytest.mark.asyncio
+async def test_update_feature_review_txn_missing_review():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("feature_reviews").document("does-not-exist")
+    transaction = client.transaction()
+    with pytest.raises(EntityNotFoundError):
+        await _update_feature_review_txn(transaction, doc_ref, 1, {"status": "approved"})
+
+
+@pytest.mark.asyncio
+async def test_update_remediation_verification_txn_logic_directly():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("remediation_verifications").document("ver-1")
+    await doc_ref.set({"version": 1, "status": "in_progress"})
+
+    transaction = client.transaction()
+    new_version = await _update_remediation_verification_txn(transaction, doc_ref, 1, {"status": "completed"})
+    assert new_version == 2
+    stored = await doc_ref.get()
+    assert stored.to_dict()["version"] == 2
+    assert stored.to_dict()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_update_remediation_verification_txn_version_conflict():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("remediation_verifications").document("ver-1")
+    await doc_ref.set({"version": 3, "status": "in_progress"})
+
+    transaction = client.transaction()
+    with pytest.raises(VersionConflictError):
+        await _update_remediation_verification_txn(transaction, doc_ref, 1, {"status": "completed"})
+
+
+@pytest.mark.asyncio
+async def test_update_remediation_verification_txn_missing_record():
+    client = FakeFirestoreClient()
+    doc_ref = client.collection("remediation_verifications").document("does-not-exist")
+    transaction = client.transaction()
+    with pytest.raises(EntityNotFoundError):
+        await _update_remediation_verification_txn(transaction, doc_ref, 1, {"status": "completed"})
 
 
 # FirestoreWorkflowRepository.update_if_version() itself is NOT exercised

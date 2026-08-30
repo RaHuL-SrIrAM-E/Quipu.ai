@@ -60,12 +60,26 @@ async def _update_workflow_txn(
     tests/test_firestore_persistence.py — without needing the real SDK's
     begin/commit/retry machinery, which is private API surface not meant to
     be mocked.
-    """
-    snapshot = None
-    async for candidate in transaction.get(doc_ref):
-        snapshot = candidate
 
-    if snapshot is None or not snapshot.exists:
+    Deliberately reads via `doc_ref.get(transaction=transaction)`, NOT
+    `transaction.get(doc_ref)`: in the installed google-cloud-firestore
+    (2.29.0), AsyncTransaction.get() for a single AsyncDocumentReference
+    internally does `await self._client.get_all([doc_ref], ...)`, but
+    AsyncClient.get_all() is itself an async-generator function — so
+    `await transaction.get(doc_ref)` raises `TypeError: object
+    async_generator can't be used in 'await' expression` inside the SDK's
+    own code (verified live against a real Firestore project), and the
+    un-awaited form raises `TypeError: 'async for' requires an object with
+    __aiter__ method, got coroutine`. Neither form works for a document
+    reference in this SDK version. AsyncDocumentReference.get(transaction=)
+    never touches the buggy get_all() path and returns a single
+    DocumentSnapshot directly — the same method every non-transactional
+    read in this module already uses, just with `transaction=` passed
+    through.
+    """
+    snapshot = await doc_ref.get(transaction=transaction)
+
+    if not snapshot.exists:
         raise EntityNotFoundError("WorkflowState", doc_ref.id)
 
     current = snapshot.to_dict() or {}
@@ -518,12 +532,12 @@ async def _update_feature_review_txn(
     against a fake transaction without the real SDK's transactional
     decorator machinery). Not written generically over both entities: the
     existing WorkflowState precedent wasn't written generically either, and
-    a two-site abstraction would be premature."""
-    snapshot = None
-    async for candidate in transaction.get(doc_ref):
-        snapshot = candidate
+    a two-site abstraction would be premature. See _update_workflow_txn's
+    docstring for why this reads via doc_ref.get(transaction=transaction)
+    rather than transaction.get(doc_ref)."""
+    snapshot = await doc_ref.get(transaction=transaction)
 
-    if snapshot is None or not snapshot.exists:
+    if not snapshot.exists:
         raise EntityNotFoundError("FeatureReview", doc_ref.id)
 
     current = snapshot.to_dict() or {}
@@ -619,12 +633,12 @@ async def _update_remediation_verification_txn(
     """The version-check-and-write logic for RemediationVerification — same
     shape as _update_feature_review_txn above (a standalone function,
     unit-testable against a fake transaction without the real SDK's
-    transactional decorator machinery)."""
-    snapshot = None
-    async for candidate in transaction.get(doc_ref):
-        snapshot = candidate
+    transactional decorator machinery). See _update_workflow_txn's
+    docstring for why this reads via doc_ref.get(transaction=transaction)
+    rather than transaction.get(doc_ref)."""
+    snapshot = await doc_ref.get(transaction=transaction)
 
-    if snapshot is None or not snapshot.exists:
+    if not snapshot.exists:
         raise EntityNotFoundError("RemediationVerification", doc_ref.id)
 
     current = snapshot.to_dict() or {}
