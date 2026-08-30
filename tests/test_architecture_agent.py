@@ -215,6 +215,44 @@ async def test_failure_transitions_correctly(monkeypatch):
     assert output.errors[0].code == "ARCHITECTURE_LLM_FAILURE"
 
 
+@pytest.mark.asyncio
+async def test_architecture_still_uses_shared_llm_call_timeout(monkeypatch):
+    """ArchitectureAgent must remain on Settings.llm_call_timeout_seconds —
+    unaffected by CodegenAgent's separate codegen_llm_call_timeout_seconds
+    (see tests/test_codegen_agent.py).
+
+    Patches app.agents.architecture's own module-level `settings` object
+    directly, NOT a fresh get_settings() call — see the identical note in
+    tests/test_planning_agent.py::test_planning_still_uses_shared_llm_call_timeout
+    for why (other test modules call get_settings.cache_clear())."""
+    import asyncio
+
+    import app.agents.architecture as architecture_module
+
+    monkeypatch.setattr(architecture_module.settings, "llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(architecture_module.settings, "codegen_llm_call_timeout_seconds", 60.0)
+
+    async def _slow_events(**kwargs):
+        await asyncio.sleep(0.5)
+        yield _FakeEvent(json.dumps(VALID_ARCHITECTURE))
+
+    class _SlowRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _FakeSessionService()
+
+        def run_async(self, **kwargs):
+            return _slow_events(**kwargs)
+
+    monkeypatch.setattr("app.agents.architecture.InMemoryRunner", _SlowRunner)
+
+    agent = ArchitectureAgent()
+    output = await agent.execute(make_agent_input(), make_context_with_plan())
+
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "ARCHITECTURE_LLM_FAILURE"
+    assert "did not complete within 0.05" in output.errors[0].message
+
+
 # ---- Plan artifact ----------------------------------------------------------
 
 

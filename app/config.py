@@ -252,6 +252,20 @@ class Settings(BaseSettings):
     # llm_call_timeout_seconds is the one genuine gap this closes — the
     # ADK runner loop (every agent's Gemini call) had no bound before.
     llm_call_timeout_seconds: float = 60.0
+
+    # CodegenAgent's own budget — deliberately separate from
+    # llm_call_timeout_seconds above. Its ADK run_async() loop covers a
+    # multi-turn conversation (explore the checked-out repo via REPO_TOOLS,
+    # then one or more write_file calls via CODEGEN_TOOLS) rather than the
+    # single-shot exploration Planning/Architecture do, so the shared 60s
+    # budget that comfortably fits those two is measurably tight for
+    # Codegen (see docs/architecture — 2026-08-31 production timeout
+    # investigation: Planning+Architecture together ran ~73s, Codegen hit
+    # the 60s ceiling). Planning/Architecture/DetectingAgent/
+    # IncidentResolutionAgent/the orchestration decision agent all remain
+    # on llm_call_timeout_seconds, unaffected by this setting.
+    codegen_llm_call_timeout_seconds: float = 120.0
+
     jira_retry_max_attempts: int = 3
     jira_retry_base_delay_seconds: float = 0.5
     jira_circuit_breaker_failure_threshold: int = 5

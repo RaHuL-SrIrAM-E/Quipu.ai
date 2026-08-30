@@ -5,6 +5,7 @@ Filesystem mutation tests use real temp directories (tmp_path) — the safety
 boundary itself must be exercised against a real filesystem, not mocked away.
 """
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from app.agent_runtime.context import AgentContext
 from app.agent_runtime.status import AgentStatus
 from app.agents.architecture import ArchitectureOutput
 from app.agents.codegen import CodegenAgent, CodegenOutput, _codegen_llm_agent
+from app.config import get_settings
 from app.domain import AgentInput, Artifact, ArtifactType, KnowledgeItem, KnowledgeRequest, KnowledgeType, Ticket, WorkflowStatus
 from app.persistence.memory import InMemoryAgentExecutionRepository
 from app.tools.codegen_tools import write_file
@@ -225,6 +227,80 @@ async def test_failure_lifecycle(monkeypatch, tmp_path: Path):
     assert agent.status == AgentStatus.COMPLETED  # handled failure, not an uncaught exception
     assert output.status == WorkflowStatus.FAILED
     assert output.errors[0].code == "CODEGEN_LLM_FAILURE"
+
+
+# ---- Timeout budget (codegen_llm_call_timeout_seconds, separate from the
+# shared llm_call_timeout_seconds Planning/Architecture use) --------------
+
+
+def make_slow_fake_runner(delay_seconds: float, final_text: str):
+    """A fake ADK runner whose single turn takes real wall-clock time
+    before yielding — the only way to genuinely exercise with_timeout's
+    asyncio.wait_for bound rather than a canned instantaneous response."""
+
+    async def _events(**kwargs):
+        await asyncio.sleep(delay_seconds)
+        yield _FakeEvent(final_text)
+
+    class _FakeRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _FakeSessionService()
+
+        def run_async(self, **kwargs):
+            return _events(**kwargs)
+
+    return _FakeRunner
+
+
+@pytest.mark.asyncio
+async def test_codegen_timeout_uses_dedicated_setting_not_shared(monkeypatch, tmp_path: Path):
+    """codegen_llm_call_timeout_seconds governs Codegen's timeout even when
+    the shared llm_call_timeout_seconds is left large — proving Codegen
+    reads its own setting, not the one Planning/Architecture use.
+
+    Patches app.agents.codegen's own module-level `settings` object
+    directly, NOT a fresh get_settings() call — other test modules call
+    get_settings.cache_clear(), which would otherwise return a different
+    Settings instance than the one codegen.py captured at import time and
+    silently no-op this test's monkeypatch when run as part of the full
+    suite (see tests/test_planning_agent.py for the identical issue)."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(codegen_module.settings, "llm_call_timeout_seconds", 60.0)
+    monkeypatch.setattr(
+        "app.agents.codegen.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.5, final_text=json.dumps(VALID_CODEGEN))
+    )
+
+    agent = CodegenAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "CODEGEN_LLM_FAILURE"
+    assert "did not complete within 0.05" in output.errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_codegen_ignores_shared_llm_call_timeout(monkeypatch, tmp_path: Path):
+    """The inverse: shrinking the SHARED setting alone must not affect
+    Codegen — its own dedicated setting is what's actually consulted."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(codegen_module.settings, "codegen_llm_call_timeout_seconds", 5.0)
+    monkeypatch.setattr(
+        "app.agents.codegen.InMemoryRunner", make_slow_fake_runner(delay_seconds=0.2, final_text=json.dumps(VALID_CODEGEN))
+    )
+
+    agent = CodegenAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codegen_dedicated_timeout_defaults_to_120_seconds():
+    assert get_settings().codegen_llm_call_timeout_seconds == 120.0
 
 
 # ---- Input ------------------------------------------------------------------

@@ -196,6 +196,47 @@ async def test_failure_transitions_correctly(monkeypatch):
     assert output.errors[0].code == "PLANNING_LLM_FAILURE"
 
 
+@pytest.mark.asyncio
+async def test_planning_still_uses_shared_llm_call_timeout(monkeypatch):
+    """PlanningAgent must remain on Settings.llm_call_timeout_seconds —
+    unaffected by CodegenAgent's separate codegen_llm_call_timeout_seconds
+    (see tests/test_codegen_agent.py).
+
+    Patches app.agents.planning's own module-level `settings` object
+    directly, NOT a fresh get_settings() call — other test modules
+    (test_cloud_logging_client.py, test_cloud_monitoring_client.py) call
+    get_settings.cache_clear() during the full suite run, which would
+    otherwise make get_settings() return a different Settings instance
+    than the one planning.py captured at import time, silently no-op'ing
+    this test's monkeypatch."""
+    import asyncio
+
+    import app.agents.planning as planning_module
+
+    monkeypatch.setattr(planning_module.settings, "llm_call_timeout_seconds", 0.05)
+    monkeypatch.setattr(planning_module.settings, "codegen_llm_call_timeout_seconds", 60.0)
+
+    async def _slow_events(**kwargs):
+        await asyncio.sleep(0.5)
+        yield _FakeEvent(json.dumps(VALID_PLAN))
+
+    class _SlowRunner:
+        def __init__(self, agent, app_name):
+            self.session_service = _FakeSessionService()
+
+        def run_async(self, **kwargs):
+            return _slow_events(**kwargs)
+
+    monkeypatch.setattr("app.agents.planning.InMemoryRunner", _SlowRunner)
+
+    agent = PlanningAgent()
+    output = await agent.execute(make_agent_input(), make_context())
+
+    assert output.status == WorkflowStatus.FAILED
+    assert output.errors[0].code == "PLANNING_LLM_FAILURE"
+    assert "did not complete within 0.05" in output.errors[0].message
+
+
 # ---- Input --------------------------------------------------------------------
 
 
