@@ -3,7 +3,12 @@ entirely to FeatureReviewService — this module contains none of that
 service's authorization or state-transition logic (Invariant 1/2).
 reviewer_type is always DecisionSource.HUMAN, fixed by
 app.api.auth.require_reviewer_identity, never accepted from the request
-body — an agent can never self-approve a review through this API."""
+body — an agent can never self-approve a review through this API.
+
+start_workflow_from_review() is the separate, explicit action that closes
+the FeatureReview -> WorkflowState boundary — delegates entirely to
+OrchestrationService.start_workflow_from_review(), same "route contains no
+business logic" invariant. Never invoked automatically by approve()."""
 
 import time
 
@@ -14,6 +19,7 @@ from app.api.container import ApiContainer
 from app.api.dependencies import get_container
 from app.api.pagination import bounded_limit
 from app.api.schemas.feature_reviews import FeatureReviewSummary, ReviewDecisionRequest
+from app.api.schemas.workflows import WorkflowDetail
 from app.core.observability import get_logger
 from app.persistence.errors import EntityNotFoundError
 from app.persistence.repositories.feature_review import FeatureReviewQuery
@@ -61,6 +67,32 @@ async def approve_feature_review(
         (time.perf_counter() - started) * 1000,
     )
     return FeatureReviewSummary.from_domain(review)
+
+
+@router.post("/{review_id}/start-workflow", response_model=WorkflowDetail)
+async def start_workflow_from_review(review_id: str, container: ApiContainer = Depends(get_container)) -> WorkflowDetail:
+    """The explicit human/authorized-caller action that closes the
+    FeatureReview -> WorkflowState boundary — delegates entirely to
+    OrchestrationService.start_workflow_from_review(), which already
+    re-validates the review is APPROVED (with a ticket) before creating
+    anything, and is idempotent (a review that already has a workflow_id
+    returns that same WorkflowState). No request body: there is nothing
+    for a caller to supply — the ticket/plan come entirely from the
+    already-approved FeatureReview, same rationale as
+    app.api.routes.resolutions.remediate_resolution. Deliberately never
+    called automatically from FeatureReviewService.approve() or the
+    Pub/Sub worker — starting engineering work stays a distinct,
+    explicit action from approving the opportunity."""
+    started = time.perf_counter()
+    workflow = await container.orchestration.start_workflow_from_review(review_id)
+    logger.info(
+        "api.command op=start_workflow_from_review review_id=%s workflow_id=%s status=%s duration_ms=%.1f",
+        review_id,
+        workflow.workflow_id,
+        workflow.status.value,
+        (time.perf_counter() - started) * 1000,
+    )
+    return WorkflowDetail.from_domain(workflow)
 
 
 @router.post("/{review_id}/reject", response_model=FeatureReviewSummary)

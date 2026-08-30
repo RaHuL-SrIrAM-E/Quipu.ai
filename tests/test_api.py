@@ -431,6 +431,95 @@ async def test_duplicate_approval_remains_idempotent(client, container):
 
 
 # ---------------------------------------------------------------------------
+# 21a-21e: FeatureReview -> WorkflowState boundary (POST /feature-reviews/{id}/start-workflow)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_and_approve_review(client, container) -> dict:
+    signal = await container.signal_repo.save(make_signal("s1", signal_type=SignalType.CUSTOMER_FEEDBACK, source=SignalSource.CUSTOMER_FEEDBACK))
+    detection = await container.detection_repo.save(make_detection([signal.signal_id], detection_type=DetectionType.FEATURE_OPPORTUNITY, domain=DetectionDomain.PRODUCT))
+    review = await container.review_service.create_review(detection.detection_id)
+    r = client.post(f"/feature-reviews/{review.review_id}/approve", json={}, headers={"X-Quipu-Reviewer-Id": "alice"})
+    assert r.status_code == 200
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_from_approved_review(client, container):
+    approved = await _seed_and_approve_review(client, container)
+
+    r = client.post(f"/feature-reviews/{approved['review_id']}/start-workflow")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "pending"
+    assert body["current_stage"] == "planning"
+    assert body["workflow_id"]
+
+    stored_review = await container.review_repo.get(approved["review_id"])
+    assert stored_review.workflow_id == body["workflow_id"]
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_rejects_pending_review(client, container):
+    signal = await container.signal_repo.save(make_signal("s1", signal_type=SignalType.CUSTOMER_FEEDBACK, source=SignalSource.CUSTOMER_FEEDBACK))
+    detection = await container.detection_repo.save(make_detection([signal.signal_id], detection_type=DetectionType.FEATURE_OPPORTUNITY, domain=DetectionDomain.PRODUCT))
+    review = await container.review_service.create_review(detection.detection_id)
+
+    r = client.post(f"/feature-reviews/{review.review_id}/start-workflow")
+    assert r.status_code == 422
+    assert r.json()["error"] == "business_rule_violation"
+    assert (await container.workflow_repo.list_recent()) == []
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_rejects_rejected_review(client, container):
+    signal = await container.signal_repo.save(make_signal("s1", signal_type=SignalType.CUSTOMER_FEEDBACK, source=SignalSource.CUSTOMER_FEEDBACK))
+    detection = await container.detection_repo.save(make_detection([signal.signal_id], detection_type=DetectionType.FEATURE_OPPORTUNITY, domain=DetectionDomain.PRODUCT))
+    review = await container.review_service.create_review(detection.detection_id)
+    reject_r = client.post(f"/feature-reviews/{review.review_id}/reject", json={}, headers={"X-Quipu-Reviewer-Id": "alice"})
+    assert reject_r.status_code == 200
+
+    r = client.post(f"/feature-reviews/{review.review_id}/start-workflow")
+    assert r.status_code == 422
+    assert r.json()["error"] == "business_rule_violation"
+    assert (await container.workflow_repo.list_recent()) == []
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_from_review_is_idempotent(client, container):
+    approved = await _seed_and_approve_review(client, container)
+
+    r1 = client.post(f"/feature-reviews/{approved['review_id']}/start-workflow")
+    r2 = client.post(f"/feature-reviews/{approved['review_id']}/start-workflow")
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["workflow_id"] == r2.json()["workflow_id"]
+    assert len(await container.workflow_repo.list_recent()) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_from_nonexistent_review(client):
+    r = client.post("/feature-reviews/does-not-exist/start-workflow")
+    assert r.status_code == 422
+    assert r.json()["error"] == "business_rule_violation"
+
+
+@pytest.mark.asyncio
+async def test_start_workflow_from_review_delegates_to_orchestrator(client, container, monkeypatch):
+    calls = []
+
+    async def _fake_start_workflow_from_review(review_id):
+        calls.append(review_id)
+        return await seed_workflow(container)
+
+    monkeypatch.setattr(container.orchestration, "start_workflow_from_review", _fake_start_workflow_from_review)
+
+    r = client.post("/feature-reviews/some-review-id/start-workflow")
+    assert r.status_code == 200
+    assert calls == ["some-review-id"]
+
+
+# ---------------------------------------------------------------------------
 # 22-23: workflow step / remediation commands delegate correctly
 # ---------------------------------------------------------------------------
 
