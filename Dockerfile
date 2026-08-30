@@ -20,6 +20,13 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# git is required at runtime by app/core/repo.py:clone_repo() (shells out to
+# the system `git` binary via subprocess — no GitPython, no bundled
+# fallback), which OrchestrationService._ensure_workspace() calls before
+# Planning/Architecture/Codegen/Testing so those stages have a checked-out
+# repository to work in. python:3.13-slim does not ship git by default.
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
