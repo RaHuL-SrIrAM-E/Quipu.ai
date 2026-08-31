@@ -115,15 +115,24 @@ not part of the live request path and should not be relied on as
 evidence of Vertex AI usage; the actual agents' ADK `LlmAgent`s are what
 need `GOOGLE_GENAI_USE_VERTEXAI=true` set at the process level.
 
-**Model id, live-verified 2026-08-30**: `Settings.gemini_model`'s prior
-default, `gemini-3.5-flash`, returns `404 NOT_FOUND` from Vertex AI
-against `quipu-507109`/`us-central1` (confirmed via a real
-`google.genai.Client(vertexai=True, ...).models.generate_content()` call,
-not just a REST probe). `gemini-2.5-flash` and `gemini-2.5-pro` both
-succeeded and are the current default (`gemini-2.5-flash`). Re-run this
-check against the target project before ever bumping the default again —
-model availability is project/region-specific and cannot be assumed from
-documentation.
+**Model id, corrected 2026-08-31**: `gemini-3.5-flash` was reported
+404-ing against `quipu-507109`/`us-central1` on 2026-08-30. Re-verified
+2026-08-31: that 404 was specific to forcing Vertex AI's `location`
+parameter to `"us-central1"`. No real agent construction site
+(`app/agents/*.py`, via ADK's own `Gemini.api_client` in
+`google.adk.models.google_llm`) ever passes an explicit `project`/
+`location` to `google.genai.Client` — confirmed by reading ADK's
+`api_client` property and by grepping this repo for `GOOGLE_CLOUD_LOCATION`
+(zero matches). Every real agent therefore relies on the SDK's own default
+resolution, which is `location="global"` when unset — and
+`gemini-3.5-flash` **is** available there in this same project, live-
+verified via `python scripts/smoke_test_gemini.py` (now fixed to mirror
+this — it no longer forces a region either). `Settings.gemini_model`'s
+current default is `gemini-3.5-flash`. `gemini-2.5-flash`/`gemini-2.5-pro`
+also work, at both "global" and `us-central1`. Re-run
+`scripts/smoke_test_gemini.py` against the target project before ever
+bumping the default again — model/location availability is
+project-specific and cannot be assumed from documentation.
 
 ## 5. Firestore setup
 

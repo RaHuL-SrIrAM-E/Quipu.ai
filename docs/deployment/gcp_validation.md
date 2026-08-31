@@ -223,6 +223,9 @@ and what was decided not to change.
   new one works (`gemini-2.5-pro` also works, not used as the default).
   `.env.example` and `scripts/smoke_test_gemini.py` updated to match; no
   other hardcoded model id exists in the repo (repo-wide grep confirmed).
+  **Superseded 2026-08-31 — see the follow-up section below**: the 404
+  was an artifact of the smoke-test script forcing `location="us-central1"`,
+  not a real unavailability of `gemini-3.5-flash` in this project.
 - `Dockerfile.worker` added (repo root) — independent build for
   `python -m app.eventing.worker_main`, same `requirements.txt`, no UI
   stage. The existing root `Dockerfile` (API+UI) is unchanged.
@@ -269,3 +272,56 @@ true): no Cloud Run service/worker-pool deployed yet, worker image not
 yet built/pushed, Firestore composite indexes not yet discoverable,
 Discovery Engine/Agent Search not enabled or wired, Jira not configured.
 This task did not deploy anything, per its own instruction.
+
+## 2026-08-31 follow-up: Gemini 3.5+ re-verification (location, not model, was the issue)
+
+Requested: switch back to Gemini 3.5+ for the hackathon's "Gemini 3.5+"
+requirement. Before changing anything, re-verified live against
+`quipu-507109` rather than trusting the 2026-08-30 404 finding above.
+
+**Root cause found**: the 2026-08-30 smoke test explicitly passed
+`location="us-central1"` (from `GCP_LOCATION`) to `google.genai.Client`.
+`gemini-3.5-flash` genuinely 404s under that specific region. But no real
+agent construction site in this codebase (`app/agents/*.py`) ever passes
+an explicit `project`/`location` — confirmed by reading ADK's own
+`Gemini.api_client` (`google/adk/models/google_llm.py`), which calls
+`Client(**kwargs)` with no project/location unless `client_kwargs`
+(never set here) supplies them — and by a repo-wide grep for
+`GOOGLE_CLOUD_LOCATION` (zero matches anywhere). The real agent path
+therefore already relies on `google-genai`'s own default resolution,
+which is `location="global"` when unset. Live-verified directly:
+
+```
+$ GEMINI_MODEL=gemini-3.5-flash GCP_LOCATION=us-central1 python scripts/smoke_test_gemini.py
+FAILURE — 404 NOT_FOUND (forced region)
+$ GEMINI_MODEL=gemini-3.5-flash python scripts/smoke_test_gemini.py   # no forced region
+SUCCESS
+```
+
+Also confirmed `gemini-3-flash`, `gemini-3-pro`, `gemini-3.0-flash`,
+`gemini-3.5-pro`, and several `-preview`/`-latest` aliases are **not**
+available in this project under any location tried — `gemini-3.5-flash`
+specifically (via the "global" location) is the one Gemini 3.x model
+confirmed live-working for `quipu-507109`.
+
+**Code changes**:
+- `Settings.gemini_model` default: `gemini-2.5-flash` → `gemini-3.5-flash`
+  (`app/config.py`).
+- `.env.example` updated to match.
+- `scripts/smoke_test_gemini.py`: no longer defaults `GCP_LOCATION` to
+  `"us-central1"` — `location` is now omitted entirely unless a caller
+  explicitly sets `GCP_LOCATION`, matching the real agents' own call
+  shape instead of validating a stricter one they don't actually use.
+
+**Tests**: full backend suite re-run after these changes — `1103 passed,
+10 skipped` (unchanged from before this change; no test hardcodes the
+literal model-id default).
+
+**Not changed in this pass**: the live `quipu-api` Cloud Run service's
+`GEMINI_MODEL` environment variable — it currently explicitly sets
+`gemini-2.5-flash`, which **overrides** this code default entirely at
+runtime. Updating the code default alone has no effect on the already-
+deployed service until either that env var is updated and the service
+redeployed/updated, or a fresh deploy omits the override (letting the new
+code default apply). No live Cloud Run mutation was made as part of this
+change.

@@ -70,11 +70,24 @@ class Settings(BaseSettings):
     # GOOGLE_GENAI_USE_VERTEXAI env var set below, not a Settings field)
     # rather than a developer API key. Deterministic agents
     # (MonitoringAgent) have no LlmAgent and therefore never read this
-    # setting. "gemini-3.5-flash" (the prior default) 404s against live
-    # Vertex AI in quipu-507109/us-central1 — live-verified against that
-    # project on 2026-08-30; "gemini-2.5-flash" and "gemini-2.5-pro" both
-    # work. Re-verify before bumping to a newer model.
-    gemini_model: str = "gemini-2.5-flash"
+    # setting.
+    #
+    # "gemini-3.5-flash" was earlier reported to 404 against
+    # quipu-507109/us-central1 (2026-08-30) — re-verified 2026-08-31 and
+    # that 404 was specific to forcing location="us-central1"; the model
+    # IS available in that same project under Vertex AI's "global"
+    # location. No agent construction site here (app/agents/*.py,
+    # ADK's own Gemini.api_client in google.adk.models.google_llm) ever
+    # passes an explicit project/location to google.genai.Client — every
+    # one relies on the SDK's own default resolution, which is
+    # location="global" when neither GOOGLE_CLOUD_LOCATION nor an
+    # explicit `location=` kwarg is set (neither is, anywhere in this
+    # repo — confirmed by grep). So the real agent path already resolves
+    # to "global" today, and "gemini-3.5-flash" works there,
+    # live-verified via `python scripts/smoke_test_gemini.py`. Re-verify
+    # before bumping to a newer model, and if you ever add an explicit
+    # `location=` override anywhere, re-check this model against it.
+    gemini_model: str = "gemini-3.5-flash"
     google_application_credentials: str | None = None
 
     jira_base_url: str | None = None

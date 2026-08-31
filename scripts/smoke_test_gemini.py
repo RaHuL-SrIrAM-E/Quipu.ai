@@ -17,8 +17,18 @@ import os
 import sys
 
 PROJECT = os.environ.get("GCP_PROJECT_ID", "quipu-507109")
-LOCATION = os.environ.get("GCP_LOCATION", "us-central1")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Deliberately NOT defaulted to a specific region (e.g. "us-central1"): no
+# real agent construction site (app/agents/*.py, via ADK's own
+# Gemini.api_client) ever passes an explicit project/location to
+# google.genai.Client either — every one relies on the SDK's own default
+# resolution, which is location="global" when unset. Forcing this script to
+# a specific region would validate a call shape the real agents don't
+# actually make (see app/config.py's gemini_model comment) — e.g.
+# "gemini-3.5-flash" 404s under an explicit "us-central1" but works under
+# the SDK's own "global" default, live-verified 2026-08-31. Only set
+# GCP_LOCATION explicitly if you want to validate a specific forced region.
+LOCATION = os.environ.get("GCP_LOCATION")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "true")
 
@@ -27,7 +37,10 @@ def main() -> int:
     try:
         import google.genai as genai
 
-        client = genai.Client(vertexai=True, project=PROJECT, location=LOCATION)
+        client_kwargs = {"vertexai": True, "project": PROJECT}
+        if LOCATION:
+            client_kwargs["location"] = LOCATION
+        client = genai.Client(**client_kwargs)
         response = client.models.generate_content(
             model=MODEL,
             contents="Reply with exactly one short sentence confirming you are working.",
