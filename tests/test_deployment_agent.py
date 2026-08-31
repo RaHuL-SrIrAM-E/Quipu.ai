@@ -763,6 +763,180 @@ async def test_metrics_captured(monkeypatch):
 # ---- Regression ---------------------------------------------------------------
 
 
+# ---- Demo mode (Settings.deployment_demo_mode) ------------------------------
+#
+# Patches app.agents.deployment's own module-level `settings` object
+# directly, NOT a fresh get_settings() call — same module-captured-settings
+# issue documented in test_testing_agent.py / test_codegen_agent.py.
+
+
+def test_deployment_demo_mode_defaults_to_false():
+    from app.config import get_settings
+
+    assert get_settings().deployment_demo_mode is False
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_false_still_uses_real_path(monkeypatch):
+    """B. DEPLOYMENT_DEMO_MODE=false -> the real Deployment LLM/
+    deploy_cloud_run path is still used."""
+    patch_cloud_run_config(monkeypatch)
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", False)
+    runner_calls = []
+    real_runner = make_deployment_runner(json.dumps(VALID_DEPLOYMENT))
+
+    def _spy_runner(agent, app_name):
+        runner_calls.append(1)
+        return real_runner(agent, app_name)
+
+    monkeypatch.setattr("app.agents.deployment.InMemoryRunner", _spy_runner)
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert runner_calls == [1]
+    assert output.status == WorkflowStatus.COMPLETED
+    assert output.artifacts[0].payload["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_true_never_calls_real_path(monkeypatch):
+    """C. DEPLOYMENT_DEMO_MODE=true -> the real Deployment LLM path is
+    never entered (no ADK runner constructed at all)."""
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+
+    def _boom(agent, app_name):
+        raise AssertionError("InMemoryRunner must never be constructed in demo mode")
+
+    monkeypatch.setattr("app.agents.deployment.InMemoryRunner", _boom)
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_true_never_calls_cloud_run_deployer(monkeypatch):
+    """C/I. DEPLOYMENT_DEMO_MODE=true -> CloudRunDeployer is never
+    constructed or called — structural bypass, not merely skipped via a
+    prompt instruction. Patches CloudRunDeployer to explode if touched."""
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("CloudRunDeployer must never be constructed in demo mode")
+
+    monkeypatch.setattr("app.core.cloud_run_client.CloudRunDeployer", _boom)
+    monkeypatch.setattr("app.tools.deployment_tools.CloudRunDeployer", _boom)
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.COMPLETED
+    assert output.artifacts[0].payload["raw_deployment_results"][0]["simulated"] is True
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_does_not_require_image_registry(monkeypatch):
+    """D. DEPLOYMENT_DEMO_MODE=true -> succeeds even though
+    CLOUD_RUN_IMAGE_REGISTRY is unset, unlike the real path."""
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+
+    class _NoRegistrySettings:
+        cloud_run_image_registry = None
+
+    monkeypatch.setattr("app.agents.deployment.get_settings", lambda: _NoRegistrySettings())
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_consumes_codegen_output(monkeypatch):
+    """E. Demo Deployment consumes the actual CODE_CHANGE artifact —
+    the deployment summary reflects the real CodegenOutput.summary/
+    created_files, not a hardcoded value."""
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+
+    custom_code_change = CodegenOutput(
+        summary="Implemented CSV export for reporting.",
+        created_files=["src/reporting/export.py"],
+        changes=[{"path": "src/reporting/export.py", "change_type": "created", "description": "csv export"}],
+    )
+    gateway = FakeArtifactGateway()
+    gateway.seed("wf-1", make_code_artifact(artifact_id="code-1", payload=custom_code_change.model_dump(mode="json")))
+    context = make_context(artifacts=gateway)
+
+    output = await DeploymentAgent().execute(make_agent_input(), context)
+
+    assert output.status == WorkflowStatus.COMPLETED
+    artifact = output.artifacts[0]
+    assert "CSV export for reporting" in artifact.payload["deployment_summary"]
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_creates_normal_deployment_artifact(monkeypatch):
+    """F/G/H/I. Demo Deployment creates a normal DEPLOYMENT artifact — same
+    artifact_type, same payload schema (DeploymentOutput) as a real run,
+    plus the additive execution_mode marker; status is a clearly-simulated
+    success, never claiming a real Cloud Run mutation happened."""
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.COMPLETED
+    artifact = output.artifacts[0]
+    assert artifact.artifact_type == ArtifactType.DEPLOYMENT
+    DeploymentOutput.model_validate(artifact.payload)
+    assert artifact.payload["execution_mode"] == "demo"
+    assert artifact.payload["status"] == "succeeded"
+    raw = artifact.payload["raw_deployment_results"][0]
+    assert raw["simulated"] is True
+    assert raw["uri"] is None  # never claims a real Cloud Run URI was assigned
+    assert "no Cloud Run Admin API call was made" in raw["message"]
+
+
+@pytest.mark.asyncio
+async def test_deployment_real_mode_payload_never_has_execution_mode_key(monkeypatch):
+    """Real-mode payload is byte-identical to before this setting
+    existed — no execution_mode key ever appears when demo mode is off."""
+    patch_cloud_run_config(monkeypatch)
+    import app.agents.deployment as deployment_module
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", False)
+    monkeypatch.setattr("app.agents.deployment.InMemoryRunner", make_deployment_runner(json.dumps(VALID_DEPLOYMENT)))
+
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert "execution_mode" not in output.artifacts[0].payload
+
+
+@pytest.mark.asyncio
+async def test_deployment_demo_mode_stage_transition_unchanged(monkeypatch):
+    """J. Orchestration transitions DEPLOYMENT -> COMPLETED the same way
+    for a demo success as for a real one — no orchestration code path
+    changed for this feature."""
+    import app.agents.deployment as deployment_module
+    from app.domain import WorkflowStage
+    from app.orchestration.transitions import next_stage
+
+    monkeypatch.setattr(deployment_module.settings, "deployment_demo_mode", True)
+    output = await DeploymentAgent().execute(make_agent_input(), make_context_with_code())
+
+    assert output.status == WorkflowStatus.COMPLETED
+    assert next_stage(WorkflowStage.DEPLOYMENT) is None  # DEPLOYMENT is the terminal stage either way
+
+
 def test_existing_app_and_orchestration_still_import():
     from app.main import app  # noqa: F401
     from app.orchestration import build_default_registry

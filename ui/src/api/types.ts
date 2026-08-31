@@ -78,6 +78,9 @@ export interface ArtifactSummary {
   created_by: string;
   created_at: string;
   status: WorkflowStatus;
+  // Set only when the producing agent ran in demo mode
+  // (CODEGEN_DEMO_MODE/TESTING_DEMO_MODE) — never present for a real run.
+  execution_mode: string | null;
 }
 
 export interface ExecutionSummary {

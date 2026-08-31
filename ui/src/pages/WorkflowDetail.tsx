@@ -131,6 +131,7 @@ export function WorkflowDetail() {
                       {artifact ? (
                         <>
                           <StatusBadge status={artifact.status} />
+                          {artifact.execution_mode === "demo" && <span className="badge badge-neutral">Demo execution</span>}
                           <span className="lineage-meta">v{artifact.version} · {formatDateTime(artifact.created_at)}</span>
                         </>
                       ) : (

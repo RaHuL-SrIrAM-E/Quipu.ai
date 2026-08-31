@@ -283,6 +283,40 @@ class Settings(BaseSettings):
     # seconds + 20% headroom for the LLM's own turns.
     deployment_llm_call_timeout_seconds: float = 360.0
 
+    # Opt-in, per-agent demo/mock execution — 2026-08-31 hackathon
+    # determinism hardening. Independent flags (deliberately not one
+    # global DEMO_MODE) so Codegen and Testing can be toggled separately.
+    # False is the only production default; when False, CodegenAgent/
+    # TestingAgent run their existing real LLM/tool-calling path exactly
+    # as before this setting existed — this flag changes nothing about
+    # that path. When True, the agent skips its real Gemini conversation
+    # entirely (no ADK runner, no with_timeout wait) and deterministically
+    # produces a CODE_CHANGE/TEST_RESULT artifact of the same shape a real
+    # run would, still consuming the real upstream artifact (Architecture/
+    # CodegenOutput) and the real provisioned workspace — see
+    # app.agents.codegen._demo_codegen_response / app.agents.testing.
+    # _demo_testing_response. Never changes PlanningAgent, ArchitectureAgent,
+    # DeploymentAgent, or any other agent.
+    codegen_demo_mode: bool = False
+    testing_demo_mode: bool = False
+
+    # Same convention, added separately (2026-08-31) once Deployment became
+    # reachable in the E2E demo: real DeploymentAgent requires
+    # CLOUD_RUN_IMAGE_REGISTRY and, if configured, would call the real Cloud
+    # Run Admin API (app/core/cloud_run_client.py) against a target-app image
+    # that no pipeline in this codebase builds/pushes — not something to
+    # exercise live in a hackathon demo. False is the only production
+    # default; when False, DeploymentAgent's real deploy_cloud_run/
+    # CloudRunDeployer path is unchanged. When True, DeploymentAgent skips
+    # its real Gemini conversation AND the deploy_cloud_run tool/
+    # CloudRunDeployer entirely (structural bypass, not a prompt
+    # instruction) and deterministically produces a DEPLOYMENT artifact of
+    # the same shape a real run would, consuming the real upstream
+    # CodegenOutput — see app.agents.deployment._demo_deployment_response.
+    # Never changes PlanningAgent, ArchitectureAgent, CodegenAgent, or
+    # TestingAgent.
+    deployment_demo_mode: bool = False
+
     jira_retry_max_attempts: int = 3
     jira_retry_base_delay_seconds: float = 0.5
     jira_circuit_breaker_failure_threshold: int = 5

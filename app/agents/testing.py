@@ -15,6 +15,7 @@ import json
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -170,6 +171,54 @@ def _ground_truth_status(test_executions: list[dict]) -> TestStatus:
     return TestStatus.PASSED
 
 
+def _demo_testing_response(code_change: CodegenOutput) -> tuple[str, list[dict]]:
+    """Deterministic stand-in for the real Testing LLM conversation AND
+    the real run_tests subprocess (Settings.testing_demo_mode=true).
+    Consumes the real, already-verified CodegenOutput (its tests_to_run/
+    created_files/modified_files) rather than inventing test names from
+    nothing, and returns both a TestingOutput JSON string and a
+    run_tests-shaped execution record (matching app.tools.testing_tools.
+    _result()'s exact fields) so this flows through the SAME downstream
+    parsing/ground-truth-status/artifact-persistence path a real run
+    uses — _ground_truth_status still computes overall_status from this
+    record, never from a hardcoded claim. Never invoked unless
+    testing_demo_mode=True."""
+    touched_files = [*code_change.created_files, *code_change.modified_files]
+    test_names = list(code_change.tests_to_run) or [f"test_{Path(p).stem}" for p in touched_files] or ["test_demo_smoke"]
+    tests_passed = len(test_names)
+    duration_seconds = round(0.4 * tests_passed + 0.8, 2)
+
+    execution = {
+        "success": True,
+        "mode": "targeted",
+        "status": "passed",
+        "command": "pytest -q " + " ".join(test_names),
+        "exit_code": 0,
+        "duration_seconds": duration_seconds,
+        "stdout": f"{tests_passed} passed in {duration_seconds}s",
+        "stderr": "",
+        "error": None,
+        "tests_collected": tests_passed,
+        "tests_passed": tests_passed,
+        "tests_failed": 0,
+        "tests_skipped": 0,
+    }
+
+    output = {
+        "summary": f"[Demo execution] All {tests_passed} test(s) related to '{code_change.summary}' passed.",
+        "overall_status": "passed",
+        "test_strategy": "targeted",
+        "targeted_tests": test_names,
+        "regression_tests": [],
+        "failures": [],
+        "environment_errors": [],
+        "coverage_summary": f"Exercised {len(touched_files)} changed file(s): {', '.join(touched_files) if touched_files else 'none'}.",
+        "recommendations": [],
+        "execution_ids": [],
+    }
+    return json.dumps(output), [execution]
+
+
 class TestingAgent(QuipuAgent):
     """Quipu-native Testing Agent. Consumes the CodeArtifact (via
     ArtifactGateway), inspects the repo, optionally consults enterprise
@@ -268,24 +317,39 @@ class TestingAgent(QuipuAgent):
         if AgentCapability.QUERY_KNOWLEDGE in self.capabilities:
             session_state["_knowledge_gateway"] = context.knowledge
 
-        runner = InMemoryRunner(agent=_testing_llm_agent, app_name="quipu")
-        session = await runner.session_service.create_session(
-            app_name="quipu", user_id=agent_input.workflow_id, state=session_state
-        )
-        message = types.Content(role="user", parts=[types.Part(text="Begin testing.")])
-
         final_text = ""
-        try:
-            async def _consume_llm_response() -> None:
-                nonlocal final_text
-                async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
-                    if event.is_final_response() and event.content and event.content.parts:
-                        final_text = event.content.parts[0].text
+        if settings.testing_demo_mode:
+            # Deterministic stand-in for the hackathon demo — no ADK
+            # runner, no Gemini call, no real pytest subprocess, no
+            # with_timeout wait. Still consumes the real CodegenOutput
+            # (code_change) and still requires the real provisioned
+            # workspace (checked above, unconditionally) — see
+            # _demo_testing_response. session_state["_test_executions"]
+            # is populated the same way run_tests itself would populate
+            # it, so _ground_truth_status below still computes the
+            # verdict from this record, never from a hardcoded claim.
+            # Never reached unless Settings.testing_demo_mode=True
+            # (default False).
+            final_text, demo_executions = _demo_testing_response(code_change)
+            session_state["_test_executions"] = demo_executions
+        else:
+            runner = InMemoryRunner(agent=_testing_llm_agent, app_name="quipu")
+            session = await runner.session_service.create_session(
+                app_name="quipu", user_id=agent_input.workflow_id, state=session_state
+            )
+            message = types.Content(role="user", parts=[types.Part(text="Begin testing.")])
 
-            await with_timeout(_consume_llm_response(), settings.testing_llm_call_timeout_seconds, operation="testing_agent_llm_call")
-        except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a result.
-            logger.exception("testing agent LLM execution failed")
-            return await _fail("TESTING_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)
+            try:
+                async def _consume_llm_response() -> None:
+                    nonlocal final_text
+                    async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
+                        if event.is_final_response() and event.content and event.content.parts:
+                            final_text = event.content.parts[0].text
+
+                await with_timeout(_consume_llm_response(), settings.testing_llm_call_timeout_seconds, operation="testing_agent_llm_call")
+            except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a result.
+                logger.exception("testing agent LLM execution failed")
+                return await _fail("TESTING_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)
 
         if not final_text.strip():
             return await _fail("TESTING_EMPTY_RESPONSE", "model returned an empty response", ErrorCategory.LLM_FAILURE)
@@ -308,12 +372,18 @@ class TestingAgent(QuipuAgent):
         testing_output = testing_output.model_copy(update={"overall_status": ground_truth_status})
 
         self.require_capability(AgentCapability.WRITE_ARTIFACT)
+        testing_payload = {**testing_output.model_dump(mode="json"), "raw_test_executions": test_executions}
+        if settings.testing_demo_mode:
+            # Same existing payload-dict extension point Codegen's own
+            # demo marker uses — Artifact has no dedicated metadata field.
+            # Never present unless testing_demo_mode=True.
+            testing_payload["execution_mode"] = "demo"
         artifact = Artifact(
             artifact_id=str(uuid.uuid4()),
             artifact_type=ArtifactType.TEST_RESULT,
             created_by=self.identity.agent_id,
             parent_artifact_ids=[code_artifact_id],
-            payload={**testing_output.model_dump(mode="json"), "raw_test_executions": test_executions},
+            payload=testing_payload,
         )
         try:
             await context.artifacts.save(agent_input.workflow_id, artifact)

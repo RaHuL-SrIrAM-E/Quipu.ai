@@ -185,6 +185,68 @@ _deployment_llm_agent = LlmAgent(
 )
 
 
+def _demo_deployment_response(code_change: CodegenOutput, workflow_id: str) -> tuple[str, list[dict]]:
+    """Deterministic stand-in for the real Deployment LLM conversation AND
+    the real deploy_cloud_run tool call (Settings.deployment_demo_mode=true).
+    Consumes the real, already-verified CodegenOutput (its summary/
+    created_files/modified_files) rather than inventing a deployment from
+    nothing, and returns both a DeploymentOutput JSON string and a
+    deploy_cloud_run-shaped result record so this flows through the SAME
+    downstream _ground_truth_status/artifact-persistence path a real
+    deployment uses. Never calls CloudRunDeployer, never touches the real
+    Cloud Run Admin API — this function makes no network call at all.
+    Never invoked unless deployment_demo_mode=True."""
+    touched_files = [*code_change.created_files, *code_change.modified_files]
+    service_name = f"quipu-demo-{workflow_id[:8].lower()}"
+    region = "us-central1"
+    environment = "staging"
+    image_tag = f"demo-{workflow_id[:8].lower()}"
+
+    result = {
+        "success": True,
+        "status": "succeeded",
+        "simulated": True,
+        "service_name": service_name,
+        "project": None,
+        "region": region,
+        "revision": f"{service_name}-demo-00001",
+        "uri": None,
+        "message": (
+            "Simulated deployment (deployment_demo_mode=true) — no Cloud Run "
+            "Admin API call was made and no Docker image was built or pushed."
+        ),
+        "deployed_at": datetime.utcnow().isoformat(),
+        "image": None,
+    }
+
+    output = {
+        "deployment_summary": (
+            f"[Demo execution] Simulated Cloud Run deployment of '{code_change.summary}' "
+            f"({len(touched_files)} changed file(s)). No real Cloud Run resource was created "
+            f"or modified."
+        ),
+        "target_platform": "cloud_run",
+        "environment": environment,
+        "service_name": service_name,
+        "region": region,
+        "strategy": "revision",
+        "configuration": {
+            "image_tag": image_tag,
+            "cpu": "1",
+            "memory": "512Mi",
+            "min_instances": 0,
+            "max_instances": 1,
+        },
+        "pre_deployment_checks": [
+            "Simulated: upstream TEST_RESULT/CODE_CHANGE artifacts consumed",
+            "Simulated: no real Cloud Run Admin API call performed",
+        ],
+        "rollback_strategy": "Not applicable — no real revision was created; simply re-run the workflow.",
+        "risks": [],
+    }
+    return json.dumps(output), [result]
+
+
 def _ground_truth_status(deployment_results: list[dict]) -> tuple[DeploymentStatus, dict]:
     """The real source of truth — computed from the actual deploy_cloud_run
     result(s), never from the model's own DeploymentOutput fields. Uses the
@@ -275,7 +337,7 @@ class DeploymentAgent(QuipuAgent):
         except ValidationError as exc:
             return await _fail("CODEGEN_OUTPUT_INVALID", str(exc), ErrorCategory.VALIDATION)
 
-        if not get_settings().cloud_run_image_registry:
+        if not settings.deployment_demo_mode and not get_settings().cloud_run_image_registry:
             return await _fail(
                 "DEPLOYMENT_CONFIGURATION_MISSING", "CLOUD_RUN_IMAGE_REGISTRY is not configured", ErrorCategory.VALIDATION
             )
@@ -291,24 +353,40 @@ class DeploymentAgent(QuipuAgent):
         if AgentCapability.QUERY_KNOWLEDGE in self.capabilities:
             session_state["_knowledge_gateway"] = context.knowledge
 
-        runner = InMemoryRunner(agent=_deployment_llm_agent, app_name="quipu")
-        session = await runner.session_service.create_session(
-            app_name="quipu", user_id=agent_input.workflow_id, state=session_state
-        )
-        message = types.Content(role="user", parts=[types.Part(text="Begin deployment.")])
-
         final_text = ""
-        try:
-            async def _consume_llm_response() -> None:
-                nonlocal final_text
-                async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
-                    if event.is_final_response() and event.content and event.content.parts:
-                        final_text = event.content.parts[0].text
+        if settings.deployment_demo_mode:
+            # Deterministic stand-in for the hackathon demo — no ADK runner,
+            # no Gemini call, no with_timeout wait, and critically: no
+            # deploy_cloud_run tool call, so CloudRunDeployer is never
+            # constructed and the real Cloud Run Admin API is never
+            # reachable from this branch at all (structural bypass, not a
+            # prompt instruction). Still consumes the real CodegenOutput
+            # (code_change) — see _demo_deployment_response.
+            # session_state["_deployment_results"] is populated the same
+            # way deploy_cloud_run itself would populate it, so
+            # _ground_truth_status below still computes the verdict from
+            # this record, never from a hardcoded claim. Never reached
+            # unless Settings.deployment_demo_mode=True (default False).
+            final_text, demo_results = _demo_deployment_response(code_change, agent_input.workflow_id)
+            session_state["_deployment_results"] = demo_results
+        else:
+            runner = InMemoryRunner(agent=_deployment_llm_agent, app_name="quipu")
+            session = await runner.session_service.create_session(
+                app_name="quipu", user_id=agent_input.workflow_id, state=session_state
+            )
+            message = types.Content(role="user", parts=[types.Part(text="Begin deployment.")])
 
-            await with_timeout(_consume_llm_response(), settings.deployment_llm_call_timeout_seconds, operation="deployment_agent_llm_call")
-        except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a deployment.
-            logger.exception("deployment agent LLM execution failed")
-            return await _fail("DEPLOYMENT_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)
+            try:
+                async def _consume_llm_response() -> None:
+                    nonlocal final_text
+                    async for event in runner.run_async(user_id=agent_input.workflow_id, session_id=session.id, new_message=message):
+                        if event.is_final_response() and event.content and event.content.parts:
+                            final_text = event.content.parts[0].text
+
+                await with_timeout(_consume_llm_response(), settings.deployment_llm_call_timeout_seconds, operation="deployment_agent_llm_call")
+            except Exception as exc:  # Gemini/ADK/tool failure — never fabricate a deployment.
+                logger.exception("deployment agent LLM execution failed")
+                return await _fail("DEPLOYMENT_LLM_FAILURE", str(exc), ErrorCategory.LLM_FAILURE)
 
         if not final_text.strip():
             return await _fail("DEPLOYMENT_EMPTY_RESPONSE", "model returned an empty response", ErrorCategory.LLM_FAILURE)
@@ -340,12 +418,18 @@ class DeploymentAgent(QuipuAgent):
         deployment_output = deployment_output.model_copy(update=update)
 
         self.require_capability(AgentCapability.WRITE_ARTIFACT)
+        deployment_payload = {**deployment_output.model_dump(mode="json"), "raw_deployment_results": deployment_results}
+        if settings.deployment_demo_mode:
+            # Same existing payload-dict extension point Codegen's/Testing's
+            # own demo marker uses — Artifact has no dedicated metadata
+            # field. Never present unless deployment_demo_mode=True.
+            deployment_payload["execution_mode"] = "demo"
         artifact = Artifact(
             artifact_id=str(uuid.uuid4()),
             artifact_type=ArtifactType.DEPLOYMENT,
             created_by=self.identity.agent_id,
             parent_artifact_ids=[code_artifact_id],
-            payload={**deployment_output.model_dump(mode="json"), "raw_deployment_results": deployment_results},
+            payload=deployment_payload,
         )
         try:
             await context.artifacts.save(agent_input.workflow_id, artifact)

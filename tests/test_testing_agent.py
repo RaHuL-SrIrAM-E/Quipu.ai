@@ -341,6 +341,131 @@ async def test_testing_dedicated_timeout_defaults_to_150_seconds():
     assert get_settings().testing_llm_call_timeout_seconds == 150.0
 
 
+# ---- Demo mode (Settings.testing_demo_mode) --------------------------------
+#
+# Patches app.agents.testing's own module-level `settings` object directly,
+# NOT a fresh get_settings() call — same module-captured-settings issue
+# noted throughout tests/test_codegen_agent.py.
+
+
+def test_testing_demo_mode_defaults_to_false():
+    from app.config import get_settings
+
+    assert get_settings().testing_demo_mode is False
+
+
+@pytest.mark.asyncio
+async def test_testing_demo_mode_false_still_uses_real_path(monkeypatch, tmp_path: Path):
+    """C. TESTING_DEMO_MODE=false -> the real Testing LLM/test-execution
+    path is still used."""
+    make_pytest_project(tmp_path, passing=True)
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_demo_mode", False)
+    runner_calls = []
+    real_runner = make_fake_runner_executing_tests(json.dumps(VALID_TESTING_PASS))
+
+    def _spy_runner(agent, app_name):
+        runner_calls.append(1)
+        return real_runner(agent, app_name)
+
+    monkeypatch.setattr("app.agents.testing.InMemoryRunner", _spy_runner)
+
+    output = await TestingAgent().execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    assert runner_calls == [1]
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_testing_demo_mode_true_never_calls_real_path(monkeypatch, tmp_path: Path):
+    """D. TESTING_DEMO_MODE=true -> the real Testing LLM/test-execution
+    path is not called (no ADK runner, no real pytest subprocess)."""
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_demo_mode", True)
+
+    def _boom(agent, app_name):
+        raise AssertionError("InMemoryRunner must never be constructed in demo mode")
+
+    monkeypatch.setattr("app.agents.testing.InMemoryRunner", _boom)
+    # No real pytest project scaffolded at all (no requirements.txt/test
+    # files in tmp_path) — if demo mode fell through to the real path,
+    # run_tests would fail with "no supported test framework detected",
+    # proving this test would catch a regression either way.
+
+    output = await TestingAgent().execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_testing_demo_mode_consumes_codegen_output(monkeypatch, tmp_path: Path):
+    """F. Demo Testing consumes the actual CODE_CHANGE artifact — test
+    names come from the real CodegenOutput.tests_to_run, not a hardcoded
+    list, and change when the code change does."""
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_demo_mode", True)
+    monkeypatch.setattr(
+        "app.agents.testing.InMemoryRunner", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be constructed"))
+    )
+
+    custom_code_change = CodegenOutput(
+        summary="Implemented CSV export for reporting.",
+        created_files=["src/reporting/export.py"],
+        changes=[{"path": "src/reporting/export.py", "change_type": "created", "description": "csv export"}],
+        tests_to_run=["tests/reporting/test_export.py"],
+    )
+    gateway = FakeArtifactGateway()
+    gateway.seed("wf-1", make_code_artifact(artifact_id="code-1", payload=custom_code_change.model_dump(mode="json")))
+    context = make_context(tmp_path, artifacts=gateway)
+
+    output = await TestingAgent().execute(make_agent_input_with_workspace(tmp_path), context)
+
+    assert output.status == WorkflowStatus.COMPLETED
+    artifact = output.artifacts[0]
+    assert artifact.payload["targeted_tests"] == ["tests/reporting/test_export.py"]
+    assert "src/reporting/export.py" in artifact.payload["coverage_summary"]
+
+
+@pytest.mark.asyncio
+async def test_testing_demo_mode_creates_normal_test_result_artifact(monkeypatch, tmp_path: Path):
+    """H/I. Demo Testing creates a normal TEST_RESULT artifact — same
+    artifact_type, same payload schema (TestingOutput) as a real run,
+    plus the additive execution_mode marker. Overall status is still
+    computed via the real _ground_truth_status from a real
+    run_tests-shaped execution record, never hardcoded."""
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_demo_mode", True)
+
+    output = await TestingAgent().execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.COMPLETED
+    artifact = output.artifacts[0]
+    assert artifact.artifact_type == ArtifactType.TEST_RESULT
+    TestingOutput.model_validate(artifact.payload)
+    assert artifact.payload["overall_status"] == "passed"
+    assert artifact.payload["execution_mode"] == "demo"
+    assert artifact.payload["raw_test_executions"][0]["status"] == "passed"
+
+
+@pytest.mark.asyncio
+async def test_testing_real_mode_payload_never_has_execution_mode_key(monkeypatch, tmp_path: Path):
+    """Real-mode payload is byte-identical to before this setting
+    existed — no execution_mode key ever appears when demo mode is off."""
+    make_pytest_project(tmp_path, passing=True)
+    import app.agents.testing as testing_module
+
+    monkeypatch.setattr(testing_module.settings, "testing_demo_mode", False)
+    monkeypatch.setattr("app.agents.testing.InMemoryRunner", make_fake_runner_executing_tests(json.dumps(VALID_TESTING_PASS)))
+
+    output = await TestingAgent().execute(make_agent_input_with_workspace(tmp_path), make_context_with_code(workspace=tmp_path))
+
+    assert "execution_mode" not in output.artifacts[0].payload
+
+
 # ---- Input artifact -----------------------------------------------------------
 
 

@@ -303,6 +303,129 @@ async def test_codegen_dedicated_timeout_defaults_to_120_seconds():
     assert get_settings().codegen_llm_call_timeout_seconds == 120.0
 
 
+# ---- Demo mode (Settings.codegen_demo_mode) --------------------------------
+#
+# Patches app.agents.codegen's own module-level `settings` object directly,
+# NOT a fresh get_settings() call — see tests/test_planning_agent.py's
+# identical note for why (other test modules call get_settings.cache_clear(),
+# which would otherwise return a different Settings instance than the one
+# codegen.py captured at import time).
+
+
+def test_codegen_demo_mode_defaults_to_false():
+    assert get_settings().codegen_demo_mode is False
+
+
+@pytest.mark.asyncio
+async def test_codegen_demo_mode_false_still_uses_real_llm_path(monkeypatch, tmp_path: Path):
+    """A. CODEGEN_DEMO_MODE=false -> the real Codegen LLM path is still used."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", False)
+    runner_calls = []
+    real_runner = make_fake_runner(final_text=json.dumps(VALID_CODEGEN))
+
+    def _spy_runner(agent, app_name):
+        runner_calls.append(1)
+        return real_runner(agent, app_name)
+
+    monkeypatch.setattr("app.agents.codegen.InMemoryRunner", _spy_runner)
+
+    agent = CodegenAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path))
+
+    assert runner_calls == [1]
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codegen_demo_mode_true_never_calls_real_llm_path(monkeypatch, tmp_path: Path):
+    """B. CODEGEN_DEMO_MODE=true -> the real Codegen LLM path is not called."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", True)
+
+    def _boom(agent, app_name):
+        raise AssertionError("InMemoryRunner must never be constructed in demo mode")
+
+    monkeypatch.setattr("app.agents.codegen.InMemoryRunner", _boom)
+
+    agent = CodegenAgent()
+    output = await agent.execute(make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path))
+
+    assert output.status == WorkflowStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_codegen_demo_mode_consumes_architecture_input(monkeypatch, tmp_path: Path):
+    """E. Demo Codegen consumes the actual Architecture artifact — the
+    files it writes come from architecture.task_designs, not a hardcoded
+    list, and change when the architecture does."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", True)
+    monkeypatch.setattr(
+        "app.agents.codegen.InMemoryRunner", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be constructed"))
+    )
+
+    custom_architecture = ArchitectureOutput(
+        design_summary="Enhanced Reporting Export Capabilities.",
+        components=[{"name": "ReportExporter", "responsibility": "exports report data as CSV"}],
+        task_designs=[{"task_id": "t1", "approach": "add CSV export endpoint", "files": ["src/reporting/export.py"]}],
+        risks=[],
+    )
+    gateway = FakeArtifactGateway()
+    gateway.seed("wf-1", make_architecture_artifact(artifact_id="arch-1", payload=custom_architecture.model_dump(mode="json")))
+    context = make_context(tmp_path, artifacts=gateway)
+
+    output = await CodegenAgent().execute(make_agent_input_with_workspace(tmp_path), context)
+
+    assert output.status == WorkflowStatus.COMPLETED
+    written = tmp_path / "src" / "reporting" / "export.py"
+    assert written.is_file()
+    assert "add CSV export endpoint" in written.read_text()
+    codegen_payload = output.artifacts[0].payload
+    assert codegen_payload["created_files"] == ["src/reporting/export.py"]
+
+
+@pytest.mark.asyncio
+async def test_codegen_demo_mode_creates_normal_code_change_artifact(monkeypatch, tmp_path: Path):
+    """G/I. Demo Codegen creates a normal CODE_CHANGE artifact — same
+    artifact_type, same payload schema (CodegenOutput) as a real run,
+    plus the additive execution_mode marker."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", True)
+
+    output = await CodegenAgent().execute(
+        make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path)
+    )
+
+    assert output.status == WorkflowStatus.COMPLETED
+    artifact = output.artifacts[0]
+    assert artifact.artifact_type == ArtifactType.CODE_CHANGE
+    # Payload still validates as the exact same CodegenOutput schema real
+    # Codegen produces — demo mode adds a key, never changes the shape.
+    CodegenOutput.model_validate(artifact.payload)
+    assert artifact.payload["execution_mode"] == "demo"
+
+
+@pytest.mark.asyncio
+async def test_codegen_real_mode_payload_never_has_execution_mode_key(monkeypatch, tmp_path: Path):
+    """Real-mode payload is byte-identical to before this setting
+    existed — no execution_mode key ever appears when demo mode is off."""
+    import app.agents.codegen as codegen_module
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", False)
+    monkeypatch.setattr("app.agents.codegen.InMemoryRunner", make_fake_runner(final_text=json.dumps(VALID_CODEGEN)))
+
+    output = await CodegenAgent().execute(
+        make_agent_input_with_workspace(tmp_path), make_context_with_architecture(workspace=tmp_path)
+    )
+
+    assert "execution_mode" not in output.artifacts[0].payload
+
+
 # ---- Input ------------------------------------------------------------------
 
 

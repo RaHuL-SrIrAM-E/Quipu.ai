@@ -310,3 +310,59 @@ async def test_retry_then_execute_next_step_resumes_at_codegen_only(monkeypatch,
     assert result.current_stage == WorkflowStage.TESTING  # advanced past Codegen
     assert plan_artifact.artifact_id in result.artifact_ids
     assert architecture_artifact.artifact_id in result.artifact_ids
+
+
+@pytest.mark.asyncio
+async def test_retry_resumes_at_codegen_with_codegen_demo_mode_enabled(monkeypatch, tmp_path):
+    """K. Retry of a FAILED workflow still resumes at the failed stage
+    (codegen) when CODEGEN_DEMO_MODE=true — the exact scenario this
+    feature exists to unblock: workflow bb05bd82-e894-401a-9a9a-
+    7c7e9be3cfcd, failed at codegen under the old timeout, must still be
+    retryable and reach TESTING via the deterministic demo path."""
+    import app.agents.codegen as codegen_module
+
+    architecture_payload = {
+        "design_summary": "Enhanced Reporting Export Capabilities.",
+        "components": [{"name": "ReportExporter", "responsibility": "exports report data"}],
+        "data_model_changes": [],
+        "api_contracts": [],
+        "task_designs": [{"task_id": "t1", "approach": "add CSV export endpoint", "files": ["src/reporting/export.py"]}],
+        "risks": [],
+    }
+    workflow_repo = InMemoryWorkflowRepository()
+    artifact_repo = InMemoryArtifactRepository()
+    plan_artifact = Artifact(artifact_type=ArtifactType.PLAN, created_by="planning_agent", payload={})
+    architecture_artifact = Artifact(artifact_type=ArtifactType.ARCHITECTURE, created_by="architecture_agent", payload=architecture_payload)
+    await artifact_repo.save("wf-1", plan_artifact)
+    await artifact_repo.save("wf-1", architecture_artifact)
+    workflow = WorkflowState(
+        workflow_id="wf-1",
+        ticket=Ticket(title="Enhanced Reporting Export Capabilities", description="Karate test result export."),
+        status=WorkflowStatus.FAILED,
+        current_stage=WorkflowStage.CODEGEN,
+        artifact_ids=[plan_artifact.artifact_id, architecture_artifact.artifact_id],
+        execution_ids=["exec-planning-1", "exec-architecture-1"],
+        metadata={"workspace_path": str(tmp_path), "failure_reason": "'codegen_agent_llm_call' did not complete within 120.0s"},
+    )
+    await workflow_repo.create(workflow)
+    service = make_service(workflow_repo, artifact_repo=artifact_repo)
+
+    monkeypatch.setattr(codegen_module.settings, "codegen_demo_mode", True)
+    monkeypatch.setattr(
+        "app.agents.codegen.InMemoryRunner", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be constructed"))
+    )
+
+    retried = await service.retry_failed_workflow("wf-1")
+    assert retried.status == WorkflowStatus.PENDING
+    assert retried.current_stage == WorkflowStage.CODEGEN  # J: stage transitions unaffected by demo mode
+    assert retried.workflow_id == "wf-1"  # same workflow_id preserved through retry + demo mode
+
+    result = await service.execute_next_step("wf-1")
+
+    assert result.status == WorkflowStatus.PENDING
+    assert result.current_stage == WorkflowStage.TESTING  # advanced past Codegen via the demo path
+    codegen_artifact_id = [a for a in result.artifact_ids if a not in workflow.artifact_ids][0]
+    codegen_artifact = await artifact_repo.get("wf-1", codegen_artifact_id)
+    assert codegen_artifact.artifact_type == ArtifactType.CODE_CHANGE
+    assert codegen_artifact.payload["execution_mode"] == "demo"
+    assert (tmp_path / "src" / "reporting" / "export.py").is_file()  # real file written to the real workspace

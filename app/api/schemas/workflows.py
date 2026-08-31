@@ -97,6 +97,13 @@ class ArtifactSummary(BaseModel):
     created_by: str
     created_at: datetime
     status: WorkflowStatus
+    # Additive, optional — set only when the producing agent ran in demo
+    # mode (Settings.codegen_demo_mode/testing_demo_mode). Read from
+    # Artifact.payload, the existing arbitrary-data extension point —
+    # Artifact itself has no dedicated metadata field, so no domain model
+    # change was made to support this. None for every real-mode artifact,
+    # unchanged from before demo mode existed.
+    execution_mode: str | None = None
 
     @classmethod
     def from_domain(cls, artifact: Artifact) -> "ArtifactSummary":
@@ -107,6 +114,7 @@ class ArtifactSummary(BaseModel):
             created_by=artifact.created_by,
             created_at=artifact.created_at,
             status=artifact.status,
+            execution_mode=artifact.payload.get("execution_mode"),
         )
 
 
