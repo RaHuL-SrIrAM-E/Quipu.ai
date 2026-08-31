@@ -639,19 +639,6 @@ gcloud pubsub topics publish quipu-signals --message='{
 
 Then watch it arrive: `GET https://quipu-api-608549741775.us-central1.run.app/signals`, then `/detections`, then `/feature-reviews` (or the UI's Signals → Detection Center → Feature Review Queue pages).
 
-### A 4-minute judge walkthrough
-
-| Time | What to show |
-|---|---|
-| 0:00–0:30 | Problem statement + the architecture diagram (this README's [The solution](#the-solution)) |
-| 0:30–1:10 | Publish a signal → watch it appear in Signals → Detection Center |
-| 1:10–1:40 | Approve the feature review (Feature Review Queue) → start the workflow |
-| 1:40–2:40 | Watch Workflow Detail advance: Planning → Architecture → Codegen → Testing → Deployment, narrating which stages are real Gemini calls vs. clearly-badged demo execution |
-| 2:40–3:10 | Artifact Lineage panel — PLAN → ARCHITECTURE → CODE_CHANGE → TEST_RESULT → DEPLOYMENT, and the Agent Executions/Orchestrator Decisions panels as evidence |
-| 3:10–3:40 | Retry: show (or narrate) the honest Deployment configuration failure and the retry that resumed the same workflow at the same stage |
-| 3:40–4:00 | State clearly that the incident → remediation → verification loop (Journey B) is implemented and tested but was **not** part of this live demo run, then close on the value proposition |
-
-**Do not present the incident/remediation flow as live-demonstrated** — narrate it as an architectural capability backed by real, tested code, exactly as this README does.
 
 ## Repository structure
 
